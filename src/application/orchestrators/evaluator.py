@@ -20,6 +20,8 @@ class SessionMetrics:
     """Métriques d'une session complète."""
     session_id: str
     start_time: float
+    status: str = "running"
+    end_time: float | None = None
     total_actions: int = 0
     successful_actions: int = 0
     failed_actions: int = 0
@@ -41,9 +43,15 @@ class SessionMetrics:
             return 0.0
         return self.total_duration_ms / self.total_actions
 
+    @property
+    def session_duration_ms(self) -> float:
+        end_time = self.end_time if self.end_time is not None else time.time()
+        return (end_time - self.start_time) * 1000
+
     def summary(self) -> str:
         return (
             f"📊 Session {self.session_id[:8]}\n"
+            f"   Statut: {self.status}\n"
             f"   Actions: {self.total_actions} "
             f"(✅ {self.successful_actions} | ❌ {self.failed_actions})\n"
             f"   Taux succès: {self.success_rate:.0%}\n"
@@ -105,7 +113,9 @@ class ActionEvaluator:
 
     def end_session(self, metrics: SessionMetrics) -> str:
         """Termine la session et retourne un résumé."""
-        if metrics not in self._history:
+        if metrics.end_time is None:
+            metrics.end_time = time.time()
+        if not any(item.session_id == metrics.session_id for item in self._history):
             self._history.append(metrics)
             if len(self._history) > self._max_history:
                 self._history = self._history[-self._max_history:]

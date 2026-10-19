@@ -1,3 +1,5 @@
+import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -6,6 +8,7 @@ import pytest
 from src.application.orchestrators.agent_runtime import AgentRuntime
 from src.application.orchestrators.conversation_manager import ConversationManager
 from src.application.orchestrators.memory_manager import MemoryManager
+from src.domain.entities.memory import MemoryFact
 from src.domain.protocols.logger import LoggerProtocol
 from src.infrastructure.memory import json_memory_store
 from src.infrastructure.memory.json_memory_store import JsonMemoryStore
@@ -108,6 +111,78 @@ def test_memory_can_forget_one_fact_or_everything(tmp_path: Path) -> None:
     assert memory.all() == []
 
 
+def test_memory_expires_episodes_and_facts_with_separate_retention(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "memory.json"
+    now = datetime.now(UTC)
+    records = [
+        MemoryFact(
+            key="episode.old",
+            value="old",
+            text="Ancienne conversation.",
+            created_at=now - timedelta(days=31),
+        ),
+        MemoryFact(
+            key="episode.current",
+            value="current",
+            text="Conversation récente.",
+            created_at=now - timedelta(days=29),
+        ),
+        MemoryFact(
+            key="user.preference.old",
+            value="old",
+            text="Ancienne préférence.",
+            created_at=now - timedelta(days=366),
+        ),
+        MemoryFact(
+            key="user.preference.current",
+            value="current",
+            text="Préférence récente.",
+            created_at=now - timedelta(days=364),
+        ),
+    ]
+    path.write_text(
+        json.dumps(
+            [record.model_dump(mode="json") for record in records],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    memory = JsonMemoryStore(path)
+
+    assert [fact.key for fact in memory.all()] == [
+        "episode.current",
+        "user.preference.current",
+    ]
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+    assert {fact["key"] for fact in persisted} == {
+        "episode.current",
+        "user.preference.current",
+    }
+
+
+def test_legacy_memory_entries_receive_a_timestamp(tmp_path: Path) -> None:
+    path = tmp_path / "memory.json"
+    path.write_text(
+        json.dumps([{
+            "key": "user.name",
+            "value": "Ada",
+            "text": "Le nom de l'utilisateur est Ada.",
+        }]),
+        encoding="utf-8",
+    )
+
+    fact = JsonMemoryStore(path).get("user.name")
+    persisted = json.loads(path.read_text(encoding="utf-8"))
+
+    assert fact is not None
+    assert fact.created_at.tzinfo is not None
+    assert fact.created_at >= datetime.now(UTC) - timedelta(seconds=5)
+    assert "created_at" in persisted[0]
+
+
 def test_memory_retention_limit_keeps_personal_facts(tmp_path: Path) -> None:
     memory = JsonMemoryStore(tmp_path / "memory.json", max_entries=3)
     memory.remember("user.name", "Ada", "Le nom de l'utilisateur est Ada.")
@@ -208,6 +283,19 @@ async def test_runtime_can_forget_a_saved_name(tmp_path: Path) -> None:
 
     assert "oublié" in response
     assert memory.get("user.name") is None
+
+
+@pytest.mark.asyncio
+async def test_runtime_can_forget_all_persistent_memory(tmp_path: Path) -> None:
+    memory = JsonMemoryStore(tmp_path / "memory.json")
+    memory.remember("user.name", "Ada", "Le nom de l'utilisateur est Ada.")
+    memory.store_episode("question", "réponse")
+    runtime = build_runtime(memory)
+
+    response = await runtime.run("oublie tout")
+
+    assert "oublié" in response
+    assert memory.all() == []
 
 
 def test_runtime_passes_persistent_memory_to_planner(tmp_path: Path) -> None:

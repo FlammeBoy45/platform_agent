@@ -1,3 +1,4 @@
+import asyncio
 import re
 import time
 import uuid
@@ -13,7 +14,7 @@ from tenacity import (
 from src.application.memory_v2.memory_v2 import MemoryV2
 from src.application.memory_v2.working_memory import WorkingMemory
 from src.application.orchestrators.conversation_manager import ConversationManager
-from src.application.orchestrators.evaluator import ActionEvaluator
+from src.application.orchestrators.evaluator import ActionEvaluator, SessionMetrics
 from src.application.orchestrators.memory_manager import MemoryManager
 from src.application.orchestrators.planner import Planner
 from src.application.orchestrators.prompt_manager import PromptManager
@@ -22,7 +23,7 @@ from src.application.orchestrators.response_parser import ResponseParser
 from src.application.orchestrators.scheduler import Scheduler
 from src.application.orchestrators.tool_executor import ToolExecutionError, ToolExecutor
 from src.domain.entities.permissions import PermissionManager, Role
-from src.domain.entities.plan import Plan
+from src.domain.entities.plan import Plan, Task
 from src.domain.protocols.event_bus import EventBus
 from src.domain.protocols.llm_provider import LLMProvider
 from src.domain.protocols.logger import LoggerProtocol
@@ -182,6 +183,75 @@ class AgentRuntime:
             return True
 
         return False
+
+    def _has_unfinished_plan(self) -> bool:
+        return bool(
+            self.current_plan
+            and any(
+                task.status in {"pending", "in_progress"}
+                for task in self.current_plan.tasks
+            )
+        )
+
+    def _merge_plan_update(self, proposed: Plan) -> Plan:
+        current = self.current_plan
+        if (
+            current is None
+            or not self._has_unfinished_plan()
+            or proposed.goal.strip().casefold() != current.goal.strip().casefold()
+        ):
+            return proposed
+
+        current_tasks = {
+            task.description.strip().casefold(): task
+            for task in current.tasks
+        }
+        merged_tasks: list[Task] = []
+        proposed_descriptions: set[str] = set()
+        for task in proposed.tasks:
+            key = task.description.strip().casefold()
+            proposed_descriptions.add(key)
+            existing = current_tasks.get(key)
+            if existing and existing.status in {"completed", "in_progress", "failed"}:
+                merged_tasks.append(existing)
+            else:
+                merged_tasks.append(task)
+
+        merged_tasks.extend(
+            task
+            for task in current.tasks
+            if task.description.strip().casefold() not in proposed_descriptions
+        )
+        proposed.tasks = merged_tasks
+        return proposed
+
+    @staticmethod
+    def _is_plan_resume_request(user_input: str) -> bool:
+        normalized = re.sub(r"[^\w\s]", " ", user_input.casefold())
+        normalized = " ".join(normalized.split())
+        resume_phrases = (
+            "continue",
+            "continuer",
+            "continue la tâche",
+            "continue la tache",
+            "poursuis",
+            "poursuivre",
+            "reprends",
+            "reprendre",
+            "reprends la tâche",
+            "reprends la tache",
+            "termine",
+            "termine la tâche",
+            "termine la tache",
+            "fais la suite",
+            "fais la suite du plan",
+            "où en étais tu",
+            "ou en etais tu",
+        )
+        return any(
+            normalized == phrase or normalized.startswith(f"{phrase} ")
+            for phrase in resume_phrases
+        )
 
     def _has_action_intent(self, user_input: str) -> bool:
         """Détecte si l'utilisateur demande une action."""
@@ -343,23 +413,67 @@ class AgentRuntime:
 
     async def run(self, user_input: str, max_steps: int = 10) -> str:
         trace_id = str(uuid.uuid4())
+        metrics = self.evaluator.start_session(trace_id, user_input)
+        response: str | None = None
+        error: BaseException | None = None
+        self.logger.info(f"Autonomous session started | trace_id={trace_id}")
 
-        # Every user request gets a fresh plan and retry budget. Conversation
-        # history remains available to the LLM, but stale task state does not.
-        self.current_plan = None
+        try:
+            if self.event_bus:
+                await self.event_bus.emit(
+                    "agent.started",
+                    {"trace_id": trace_id, "user_input": user_input},
+                )
+            response = await self._run_session(
+                user_input,
+                max_steps,
+                trace_id,
+                metrics,
+            )
+            return response
+        except asyncio.CancelledError as exc:
+            metrics.status = "cancelled"
+            error = exc
+            raise
+        except Exception as exc:
+            metrics.status = "failed"
+            error = exc
+            raise
+        finally:
+            if metrics.status == "running":
+                metrics.status = "completed"
+            self.evaluator.end_session(metrics)
+            if self.event_bus:
+                event_type = (
+                    "agent.completed"
+                    if metrics.status == "completed"
+                    else "agent.failed"
+                    if metrics.status == "failed"
+                    else "agent.interrupted"
+                )
+                event_data: dict[str, Any] = {
+                    "trace_id": trace_id,
+                    "status": metrics.status,
+                    "response": response,
+                    "metrics": metrics.summary(),
+                    "duration_ms": metrics.session_duration_ms,
+                }
+                if error is not None:
+                    event_data["error"] = str(error)
+                await self.event_bus.emit(event_type, event_data)
+
+    async def _run_session(
+        self,
+        user_input: str,
+        max_steps: int,
+        trace_id: str,
+        metrics: SessionMetrics,
+    ) -> str:
+
+        # Keep unfinished plans in this runtime; only explicit follow-ups resume them.
         self._retry_count = 0
         self._last_responses = []
         self._loop_count = 0
-
-        self.logger.info(f"Autonomous session started | trace_id={trace_id}")
-
-        metrics = self.evaluator.start_session(trace_id, user_input)
-
-        if self.event_bus:
-            await self.event_bus.emit(
-                "agent.started",
-                {"trace_id": trace_id, "user_input": user_input},
-            )
 
         previous_user_input = next(
             (
@@ -411,11 +525,13 @@ class AgentRuntime:
 
         memory_response = self._answer_memory_list_if_requested(user_input)
         if memory_response:
+            self.conversation.add_assistant_message(memory_response)
             return memory_response
 
         # TOOL SHORTCUT
         tools_response = self._answer_tools_list_if_requested(user_input)
         if tools_response:
+            self.conversation.add_assistant_message(tools_response)
             if self.memory_v2:
                 self.memory_v2.store_episode(
                     user_input, {"type": "tool_list", "output": tools_response}
@@ -425,6 +541,7 @@ class AgentRuntime:
         # MEMORY SHORTCUT
         memory_response = self.memory_manager.answer_from_memory(user_input)
         if memory_response:
+            self.conversation.add_assistant_message(memory_response)
             if self.memory_v2:
                 self.memory_v2.store_episode(
                     user_input, {"type": "memory_hit", "output": memory_response}
@@ -432,7 +549,15 @@ class AgentRuntime:
             return memory_response
 
         # PLAN INIT
-        if self.current_plan is None or len(getattr(self.current_plan, "tasks", [])) == 0:
+        resume_plan = (
+            self._has_unfinished_plan()
+            and self._is_plan_resume_request(user_input)
+        )
+        if resume_plan and self.current_plan:
+            for task in self.current_plan.tasks:
+                if task.status == "in_progress":
+                    task.status = "pending"
+        else:
             self.current_plan = await self.planner.create_plan(user_input)
 
         last_response = ""
@@ -542,9 +667,8 @@ class AgentRuntime:
                     action.tool = forced_tool
                     action.args = forced_args
 
-            # PLAN UPDATE
             if action.plan:
-                self.current_plan = action.plan
+                self.current_plan = self._merge_plan_update(action.plan)
 
             tool_name = str(action.tool or "final")
             args = action.args or {}
@@ -573,8 +697,13 @@ class AgentRuntime:
                 if task:
                     task.status = "completed"
 
-                # ✅ MÉTRIQUES FIN DE SESSION
-                self.evaluator.end_session(metrics)
+                if (
+                    task
+                    and self.current_plan
+                    and self.scheduler.get_next_task(self.current_plan)
+                ):
+                    last_response = response
+                    continue
 
                 return response
 
@@ -591,6 +720,7 @@ class AgentRuntime:
                         "type": "direct",
                         "output": response,
                     })
+                self.conversation.add_assistant_message(response)
                 return response
 
             # =========================
@@ -634,6 +764,15 @@ class AgentRuntime:
                     )
                 except ToolAuthorizationError as e:
                     response = str(e)
+                    metrics.status = "failed"
+                    self.evaluator.record_action(
+                        metrics,
+                        tool_name,
+                        False,
+                        0,
+                        response,
+                        error=response,
+                    )
                     self.logger.warning(response)
                     self.conversation.add_assistant_message(response)
                     if self.event_bus:
@@ -691,6 +830,7 @@ class AgentRuntime:
                     self.conversation.add_assistant_message(response)
                     if task:
                         task.status = "failed"
+                    metrics.status = "failed"
                     return response
                 
                 self._retry_count = retry_count + 1
@@ -723,6 +863,7 @@ class AgentRuntime:
                 self.conversation.add_assistant_message(response)
                 if task:
                     task.status = "failed"
+                metrics.status = "failed"
                 return response
             
 
@@ -755,12 +896,26 @@ class AgentRuntime:
 
             # RETURN DIRECT TOOL
             if tool and tool.return_direct:
+                if (
+                    task
+                    and self.current_plan
+                    and self.scheduler.get_next_task(self.current_plan)
+                ):
+                    self.conversation.add_assistant_message(observation)
+                    last_response = observation
+                    continue
+                if not success:
+                    metrics.status = "failed"
+                self.conversation.add_assistant_message(observation)
                 return observation
 
             self.conversation.add_assistant_message(observation)
             last_response = observation
 
-        return f"Max steps atteints. Dernier état: {last_response}"
+        metrics.status = "incomplete"
+        response = f"Max steps atteints. Dernier état: {last_response}"
+        self.conversation.add_assistant_message(response)
+        return response
 
     # ============================================================
     # RESET

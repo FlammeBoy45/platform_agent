@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,7 @@ from src.application.orchestrators.agent_runtime import (
     ToolAuthorizationError,
 )
 from src.config.settings import Settings
+from src.domain.protocols.local_event_bus import LocalEventBus
 from src.domain.protocols.logger import LoggerProtocol
 from src.infrastructure.tools.calculator_tool import CalculatorTool
 from src.infrastructure.tools.datetime_tool import DateTimeTool
@@ -460,6 +462,242 @@ async def test_file_read_does_not_prompt_for_confirmation(tmp_path: Path) -> Non
         "lis note.txt",
         "trace",
     ) == "contenu"
+
+
+@pytest.mark.asyncio
+async def test_unfinished_plan_resumes_on_explicit_follow_up() -> None:
+    llm = FakeLLM([
+        (
+            '{"goal":"Répéter puis saluer",'
+            '"tasks":['
+            '{"description":"Répéter le texte","depends_on":[],"status":"pending"},'
+            '{"description":"Saluer","depends_on":[],"status":"pending"}'
+            ']}'
+        ),
+        (
+            '{"tool":"echo","args":{"text":"première étape"},'
+            '"plan":{"goal":"Répéter puis saluer","tasks":['
+            '{"description":"Répéter le texte","status":"pending"},'
+            '{"description":"Saluer","status":"pending"}]}}'
+        ),
+        '{"tool":"final","args":{"content":"Deuxième étape terminée."}}',
+    ])
+    registry = ToolRegistry()
+    registry.register(EchoTool())
+    runtime = AgentRuntime(
+        llm,
+        NullLogger(),
+        registry,
+        enable_memory=False,
+    )
+
+    first_result = await runtime.run("répète première étape", max_steps=1)
+
+    assert first_result == "Max steps atteints. Dernier état: première étape"
+    assert runtime.current_plan is not None
+    assert [task.status for task in runtime.current_plan.tasks] == [
+        "completed",
+        "pending",
+    ]
+
+    resumed_result = await runtime.run("continue")
+
+    assert resumed_result == "Deuxième étape terminée."
+    assert [task.status for task in runtime.current_plan.tasks] == [
+        "completed",
+        "completed",
+    ]
+    assert len(llm.messages) == 3
+
+
+@pytest.mark.asyncio
+async def test_direct_tool_does_not_skip_remaining_plan_tasks() -> None:
+    llm = FakeLLM([
+        (
+            '{"goal":"Répéter deux textes",'
+            '"tasks":['
+            '{"description":"Répéter le premier texte","status":"pending"},'
+            '{"description":"Répéter le second texte","status":"pending"}'
+            ']}'
+        ),
+        '{"tool":"echo","args":{"text":"premier"}}',
+        '{"tool":"echo","args":{"text":"second"}}',
+    ])
+    registry = ToolRegistry()
+    registry.register(EchoTool())
+    runtime = AgentRuntime(
+        llm,
+        NullLogger(),
+        registry,
+        enable_memory=False,
+    )
+
+    result = await runtime.run("repete les textes", max_steps=2)
+
+    assert result == "second"
+    assert runtime.current_plan is not None
+    assert [task.status for task in runtime.current_plan.tasks] == [
+        "completed",
+        "completed",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_unrelated_request_starts_a_new_plan() -> None:
+    llm = FakeLLM([
+        '{"goal":"premier objectif","tasks":[{"description":"étape 1"}]}',
+        '{"tool":"final","args":{"content":"Premier objectif terminé."}}',
+        '{"goal":"second objectif","tasks":[{"description":"étape 2"}]}',
+        '{"tool":"final","args":{"content":"Second objectif terminé."}}',
+    ])
+    runtime = AgentRuntime(
+        llm,
+        NullLogger(),
+        ToolRegistry(),
+        enable_memory=False,
+    )
+
+    assert await runtime.run("premier objectif") == "Premier objectif terminé."
+    assert await runtime.run("second objectif") == "Second objectif terminé."
+    assert runtime.current_plan is not None
+    assert runtime.current_plan.goal == "second objectif"
+    assert len(llm.messages) == 4
+
+
+@pytest.mark.asyncio
+async def test_shortcut_exit_finalizes_metrics_and_emits_completion() -> None:
+    events: list[tuple[str, dict[str, Any]]] = []
+    event_bus = LocalEventBus()
+
+    for event_type in ("agent.started", "agent.completed", "agent.failed"):
+        event_bus.subscribe(
+            event_type,
+            lambda data, name=event_type: capture_event(events, name, data),
+        )
+
+    runtime = AgentRuntime(
+        FakeLLM([]),
+        NullLogger(),
+        ToolRegistry(),
+        event_bus=event_bus,
+        enable_memory=False,
+    )
+
+    response = await runtime.run("liste des tools disponibles")
+
+    assert response.startswith("Tools disponibles")
+    assert len(runtime.evaluator._history) == 1
+    metrics = runtime.evaluator._history[0]
+    assert metrics.status == "completed"
+    assert metrics.end_time is not None
+    assert metrics.session_duration_ms >= 0
+    assert [event for event, _ in events] == [
+        "agent.started",
+        "agent.completed",
+    ]
+    assert events[-1][1]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_max_steps_exit_finalizes_as_incomplete() -> None:
+    event_bus = LocalEventBus()
+    events: list[tuple[str, dict[str, Any]]] = []
+    event_bus.subscribe(
+        "agent.interrupted",
+        lambda data: capture_event(events, "agent.interrupted", data),
+    )
+    runtime = AgentRuntime(
+        FakeLLM([
+            '{"goal":"objectif","tasks":[{"description":"étape"}]}',
+        ]),
+        NullLogger(),
+        ToolRegistry(),
+        event_bus=event_bus,
+        enable_memory=False,
+    )
+
+    response = await runtime.run("objectif", max_steps=0)
+
+    assert response.startswith("Max steps atteints")
+    metrics = runtime.evaluator._history[0]
+    assert metrics.status == "incomplete"
+    assert metrics.end_time is not None
+    assert len(events) == 1
+    assert events[0][1]["status"] == "incomplete"
+
+
+@pytest.mark.asyncio
+async def test_exception_finalizes_metrics_and_emits_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event_bus = LocalEventBus()
+    events: list[tuple[str, dict[str, Any]]] = []
+    event_bus.subscribe(
+        "agent.failed",
+        lambda data: capture_event(events, "agent.failed", data),
+    )
+    runtime = AgentRuntime(
+        FakeLLM([]),
+        NullLogger(),
+        ToolRegistry(),
+        event_bus=event_bus,
+        enable_memory=False,
+    )
+
+    async def fail_session(*_args: Any) -> str:
+        raise RuntimeError("LLM indisponible")
+
+    monkeypatch.setattr(runtime, "_run_session", fail_session)
+
+    with pytest.raises(RuntimeError, match="LLM indisponible"):
+        await runtime.run("question")
+
+    metrics = runtime.evaluator._history[0]
+    assert metrics.status == "failed"
+    assert metrics.end_time is not None
+    assert len(events) == 1
+    assert events[0][1]["error"] == "LLM indisponible"
+
+
+@pytest.mark.asyncio
+async def test_cancellation_finalizes_session_as_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event_bus = LocalEventBus()
+    events: list[tuple[str, dict[str, Any]]] = []
+    event_bus.subscribe(
+        "agent.interrupted",
+        lambda data: capture_event(events, "agent.interrupted", data),
+    )
+    runtime = AgentRuntime(
+        FakeLLM([]),
+        NullLogger(),
+        ToolRegistry(),
+        event_bus=event_bus,
+        enable_memory=False,
+    )
+
+    async def cancel_session(*_args: Any) -> str:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(runtime, "_run_session", cancel_session)
+
+    with pytest.raises(asyncio.CancelledError):
+        await runtime.run("question")
+
+    metrics = runtime.evaluator._history[0]
+    assert metrics.status == "cancelled"
+    assert metrics.end_time is not None
+    assert len(events) == 1
+    assert events[0][1]["status"] == "cancelled"
+
+
+async def capture_event(
+    events: list[tuple[str, dict[str, Any]]],
+    event_type: str,
+    data: dict[str, Any],
+) -> None:
+    events.append((event_type, data))
 
 
 @pytest.mark.asyncio

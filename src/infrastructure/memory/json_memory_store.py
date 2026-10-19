@@ -4,6 +4,7 @@ import os
 import re
 import time
 import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,8 @@ class JsonMemoryStore:
     MAX_EPISODES = 500
     MAX_SKILLS = 200
     MAX_TEXT_CHARS = 8_000
+    FACT_RETENTION = timedelta(days=365)
+    EPISODE_RETENTION = timedelta(days=30)
 
     def __init__(self, path: str | Path, max_entries: int = MAX_ENTRIES) -> None:
         self.path = Path(path)
@@ -23,6 +26,7 @@ class JsonMemoryStore:
         self._load()
 
     def remember(self, key: str, value: str, text: str) -> None:
+        self._purge_expired()
         fact = MemoryFact(
             key=key[:200],
             value=value[: self.MAX_TEXT_CHARS],
@@ -33,9 +37,11 @@ class JsonMemoryStore:
         self._save()
 
     def get(self, key: str) -> MemoryFact | None:
+        self._purge_expired()
         return self._facts.get(key)
 
     def search(self, query: str, limit: int = 5) -> list[MemoryFact]:
+        self._purge_expired()
         query_terms = self._terms(query)
         if not query_terms or limit <= 0:
             return []
@@ -55,9 +61,11 @@ class JsonMemoryStore:
         return [fact for _, fact in scored[:limit]]
 
     def all(self) -> list[MemoryFact]:
+        self._purge_expired()
         return list(self._facts.values())
 
     def forget(self, query: str | None = None) -> int:
+        self._purge_expired()
         if query is None or not query.strip():
             removed = len(self._facts)
             self._facts.clear()
@@ -78,6 +86,7 @@ class JsonMemoryStore:
         return removed
 
     def list_recent(self, limit: int = 20) -> list[MemoryFact]:
+        self._purge_expired()
         if limit <= 0:
             return []
         return list(reversed(list(self._facts.values())[-limit:]))
@@ -155,6 +164,7 @@ class JsonMemoryStore:
                 "le fichier a été conservé intact."
             )
 
+        needs_timestamp_migration = False
         for item in raw:
             if not isinstance(item, dict):
                 raise RuntimeError(
@@ -163,10 +173,17 @@ class JsonMemoryStore:
                 )
 
             try:
+                if "created_at" not in item:
+                    needs_timestamp_migration = True
                 fact = MemoryFact(
                     key=str(item["key"]),
                     value=str(item["value"]),
                     text=str(item["text"]),
+                    **(
+                        {"created_at": item["created_at"]}
+                        if "created_at" in item
+                        else {}
+                    ),
                 )
             except (KeyError, TypeError, ValueError) as exc:
                 raise RuntimeError(
@@ -176,14 +193,15 @@ class JsonMemoryStore:
 
             self._facts[fact.key] = fact
 
+        expired = self._purge_expired(save=False)
         original_count = len(self._facts)
         self._trim()
-        if len(self._facts) < original_count:
+        if expired or len(self._facts) < original_count or needs_timestamp_migration:
             self._save()
 
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = [fact.model_dump() for fact in self._facts.values()]
+        payload = [fact.model_dump(mode="json") for fact in self._facts.values()]
         temporary_path = self.path.with_name(
             f"{self.path.name}.{uuid.uuid4().hex}.tmp"
         )
@@ -221,6 +239,27 @@ class JsonMemoryStore:
                 next(iter(self._facts)),
             )
             del self._facts[oldest_key]
+
+    def _purge_expired(self, save: bool = True) -> int:
+        now = datetime.now(UTC)
+        expired_keys: list[str] = []
+        for key, fact in self._facts.items():
+            created_at = fact.created_at
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=UTC)
+            retention = (
+                self.EPISODE_RETENTION
+                if key.startswith("episode.")
+                else self.FACT_RETENTION
+            )
+            if now - created_at >= retention:
+                expired_keys.append(key)
+
+        for key in expired_keys:
+            del self._facts[key]
+        if expired_keys and save:
+            self._save()
+        return len(expired_keys)
 
     def _terms(self, text: str) -> set[str]:
         stop_words = {"est", "suis", "sont", "dans", "avec", "pour", "quoi", "quel", "quelle", "quels", "quelles", "mon", "ma", "mes", "ton", "ta", "tes", "le", "la", "les", "un", "une", "des", "du", "de", "et", "à", "au", "aux", "je", "tu", "il", "elle", "me", "te", "moi", "toi", "que", "qui", "comment"}

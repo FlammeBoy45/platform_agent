@@ -6,6 +6,7 @@ from src.application.orchestrators.agent_runtime import AgentRuntime
 from src.config.settings import get_settings
 from src.domain.entities.permissions import Role
 from src.infrastructure.llm.groq_provider import GroqProvider
+from src.infrastructure.llm.ollama_provider import OllamaProvider
 from src.infrastructure.llm.openai_provider import OpenAIProvider
 from src.infrastructure.logging.loguru_logger import LoguruLogger
 from src.infrastructure.memory.json_memory_store import JsonMemoryStore
@@ -61,6 +62,15 @@ class Container(containers.DeclarativeContainer):
                 settings,
             ),
             model=providers.Callable(lambda s: s.OPENAI_MODEL, settings),
+            logger=logger,
+        ),
+        ollama=providers.Factory(
+            OllamaProvider,
+            base_url=providers.Callable(
+                lambda s: s.OLLAMA_BASE_URL,
+                settings,
+            ),
+            model=providers.Callable(lambda s: s.OLLAMA_MODEL, settings),
             logger=logger,
         ),
     )

@@ -54,6 +54,8 @@ class Settings(BaseSettings):
 
     GROQ_API_KEY: SecretStr = Field(default=SecretStr(""))
     GROQ_MODEL: str = "openai/gpt-oss-20b"
+    OLLAMA_BASE_URL: str = "http://localhost:11434/v1"
+    OLLAMA_MODEL: str = "llama3.2"
 
 
 @lru_cache(maxsize=1)
