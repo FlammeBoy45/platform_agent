@@ -35,6 +35,11 @@ par défaut (`ENABLE_PYTHON_CODE=true` pour l’activer).
 Les échanges et souvenirs explicites sont enregistrés au fil des conversations dans
 `data/memory.json`, partagé entre les modèles. Demande « montre-moi ta mémoire » pour
 afficher les souvenirs récents.
+Le rôle local est `USER` par défaut (`AGENT_ROLE=readonly` ou `AGENT_ROLE=admin` pour
+le modifier). Ce réglage n'est pas une authentification multi-utilisateur. Les créations,
+modifications et suppressions de fichiers demandent une confirmation dans la console;
+les lectures ne la demandent pas. Les appels du runtime sans gestionnaire de confirmation
+sont refusés par défaut pour ces actions.
 Tu peux formuler les demandes naturellement, par exemple « fais-moi le module auth
 même vide » : l’agent crée alors un squelette `.py` dans cet espace, sans écraser
 un fichier existant.

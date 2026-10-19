@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from src.config.settings import Settings
 from src.domain.entities.permissions import PermissionManager, Role
 from src.infrastructure.memory.json_memory_store import JsonMemoryStore
 from src.infrastructure.tools.default_tools import register_default_tools
@@ -91,3 +92,32 @@ def test_unknown_tools_remain_denied() -> None:
     permissions = PermissionManager()
 
     assert not permissions.can_execute("unknown_tool")
+
+
+@pytest.mark.parametrize("action", ["create", "update", "delete", ""])
+def test_file_mutations_require_confirmation(action: str) -> None:
+    permissions = PermissionManager()
+
+    assert permissions.requires_confirmation("file_crud", {"action": action})
+
+
+def test_file_reads_do_not_require_confirmation() -> None:
+    permissions = PermissionManager()
+
+    assert not permissions.requires_confirmation("file_crud", {"action": "read"})
+
+
+def test_readonly_role_can_only_read_through_file_crud() -> None:
+    permissions = PermissionManager(current_role=Role.READONLY)
+
+    assert permissions.can_execute("file_crud", {"action": "read"})
+    assert not permissions.can_execute("file_crud", {"action": "create"})
+
+
+def test_only_admin_can_execute_python_code() -> None:
+    assert not PermissionManager(Role.USER).can_execute("python_code")
+    assert PermissionManager(Role.ADMIN).can_execute("python_code")
+
+
+def test_agent_role_is_configurable() -> None:
+    assert Settings(AGENT_ROLE="readonly").AGENT_ROLE is Role.READONLY

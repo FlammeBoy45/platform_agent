@@ -4,6 +4,7 @@ from dependency_injector import containers, providers
 
 from src.application.orchestrators.agent_runtime import AgentRuntime
 from src.config.settings import get_settings
+from src.domain.entities.permissions import Role
 from src.infrastructure.llm.groq_provider import GroqProvider
 from src.infrastructure.llm.openai_provider import OpenAIProvider
 from src.infrastructure.logging.loguru_logger import LoguruLogger
@@ -72,4 +73,5 @@ class Container(containers.DeclarativeContainer):
         memory=memory_store,
         memory_v2=memory_store,
         enable_memory=providers.Callable(lambda s: s.ENABLE_MEMORY, settings),
+        current_role=providers.Callable(lambda s: Role(s.AGENT_ROLE), settings),
     )

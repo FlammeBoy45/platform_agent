@@ -1,7 +1,7 @@
 # permissions.py
 
-from enum import Enum
 from dataclasses import dataclass, field
+from enum import Enum
 
 
 class Role(str, Enum):
@@ -36,12 +36,12 @@ class PermissionManager:
             "file_list": ToolPermission("file_list", [Role.ADMIN, Role.USER, Role.READONLY]),
             "file_crud": ToolPermission(
                 "file_crud",
-                [Role.ADMIN, Role.USER],
+                [Role.ADMIN, Role.USER, Role.READONLY],
                 require_confirmation=True  # Demander confirmation pour modifier des fichiers
             ),
             "python_code": ToolPermission(
                 "python_code",
-                [Role.ADMIN, Role.USER],  # Seul l'admin peut exécuter du code
+                [Role.ADMIN],
                 require_confirmation=False,
             ),
             "google_search": ToolPermission("google_search", [Role.ADMIN, Role.USER]),
@@ -56,18 +56,34 @@ class PermissionManager:
             ),
         }
 
-    def can_execute(self, tool_name: str) -> bool:
+    def can_execute(
+        self,
+        tool_name: str,
+        args: dict[str, object] | None = None,
+    ) -> bool:
         """Vérifie si le rôle actuel peut exécuter le tool."""
         perm = self._permissions.get(tool_name)
         if not perm:
             return False  # Tool inconnu → interdit
+        if (
+            tool_name == "file_crud"
+            and self.current_role == Role.READONLY
+            and (args is None or str(args.get("action", "")).casefold() != "read")
+        ):
+            return False
         return self.current_role in perm.allowed_roles
 
-    def requires_confirmation(self, tool_name: str) -> bool:
+    def requires_confirmation(
+        self,
+        tool_name: str,
+        args: dict[str, object] | None = None,
+    ) -> bool:
         """Vérifie si le tool nécessite une confirmation utilisateur."""
         perm = self._permissions.get(tool_name)
         if not perm:
             return True  # Par défaut, demander confirmation
+        if tool_name == "file_crud" and args is not None:
+            return str(args.get("action", "")).casefold() != "read"
         return perm.require_confirmation
 
     def set_role(self, role: Role) -> None:

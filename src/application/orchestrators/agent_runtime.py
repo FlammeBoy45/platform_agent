@@ -1,6 +1,7 @@
 import re
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from tenacity import (
@@ -28,6 +29,12 @@ from src.domain.protocols.logger import LoggerProtocol
 from src.domain.protocols.memory import AgentMemory, LongTermMemory
 from src.domain.protocols.tool import Tool, ToolProvider
 
+ConfirmationHandler = Callable[[str, dict[str, Any]], Awaitable[bool]]
+
+
+class ToolAuthorizationError(Exception):
+    """Raised when a tool call is unauthorized or lacks user confirmation."""
+
 
 class AgentRuntime:
     MAX_MESSAGES = 6
@@ -44,6 +51,8 @@ class AgentRuntime:
         prompter: PromptManager | None = None,
         enable_memory: bool = True,
         memory_v2: AgentMemory | None = None,
+        current_role: Role = Role.USER,
+        confirmation_handler: ConfirmationHandler | None = None,
     ) -> None:
 
         self.llm = llm
@@ -51,7 +60,8 @@ class AgentRuntime:
         self.tools = tools
         self.event_bus = event_bus
 
-        self.permissions = PermissionManager(current_role=Role.USER)  # ✅
+        self.permissions = PermissionManager(current_role=current_role)
+        self.confirmation_handler = confirmation_handler
         self.evaluator = ActionEvaluator()  # ✅
 
         # Core modules
@@ -296,9 +306,25 @@ class AgentRuntime:
         return "\n".join(entries)
 
     async def _run_tool(self, tool: Tool, args: dict[str, Any], user_input: str, trace_id: str) -> str:
-        # ✅ Vérification RBAC
-        if not self.permissions.can_execute(tool.name):
-            return f"Accès refusé : vous n'avez pas la permission d'utiliser '{tool.name}'. Rôle actuel: {self.permissions.current_role.value}"
+        authorization_args = args
+        if hasattr(tool, "infer_args"):
+            authorization_args = tool.infer_args(user_input, args)
+        if not self.permissions.can_execute(tool.name, authorization_args):
+            raise ToolAuthorizationError(
+                f"Accès refusé : vous n'avez pas la permission d'utiliser "
+                f"'{tool.name}'. Rôle actuel: {self.permissions.current_role.value}"
+            )
+
+        if self.permissions.requires_confirmation(tool.name, authorization_args):
+            if self.confirmation_handler is None:
+                raise ToolAuthorizationError(
+                    f"Action '{tool.name}' bloquée : une confirmation utilisateur "
+                    "est requise, mais aucun gestionnaire de confirmation n'est configuré."
+                )
+            if not await self.confirmation_handler(tool.name, authorization_args):
+                raise ToolAuthorizationError(
+                    f"Action '{tool.name}' annulée : confirmation refusée."
+                )
         
         try:
             start = time.time()
@@ -606,6 +632,16 @@ class AgentRuntime:
                     self.evaluator.record_action(
                         metrics, tool_name, success, duration_ms, observation
                     )
+                except ToolAuthorizationError as e:
+                    response = str(e)
+                    self.logger.warning(response)
+                    self.conversation.add_assistant_message(response)
+                    if self.event_bus:
+                        await self.event_bus.emit(
+                            "agent.authorization_denied",
+                            {"trace_id": trace_id, "tool": tool_name, "reason": response},
+                        )
+                    return response
                 except Exception as e:
                     observation = f"ERROR: {str(e)}"
                     success = False

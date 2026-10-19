@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from src.main import _conversation_loop
+from src.main import _confirm_tool_action, _conversation_loop
 
 
 class CancelledAgent:
@@ -51,3 +51,31 @@ async def test_ctrl_c_during_response_exits_chat_cleanly(
     assert "Traceback" not in output
     assert "Tu peux continuer" not in output
     assert "Agent arrêté." in output
+
+
+@pytest.mark.parametrize("answer", ["o", "oui", "Y", "yes"])
+@pytest.mark.asyncio
+async def test_confirmation_accepts_explicit_yes(
+    monkeypatch: pytest.MonkeyPatch,
+    answer: str,
+) -> None:
+    monkeypatch.setattr("builtins.input", lambda _prompt: answer)
+
+    assert await _confirm_tool_action(
+        "file_crud",
+        {"action": "delete", "path": "notes.txt"},
+    )
+
+
+@pytest.mark.parametrize("answer", ["", "non", "no"])
+@pytest.mark.asyncio
+async def test_confirmation_defaults_to_no(
+    monkeypatch: pytest.MonkeyPatch,
+    answer: str,
+) -> None:
+    monkeypatch.setattr("builtins.input", lambda _prompt: answer)
+
+    assert not await _confirm_tool_action(
+        "file_crud",
+        {"action": "delete", "path": "notes.txt"},
+    )

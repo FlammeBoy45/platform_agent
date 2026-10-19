@@ -4,6 +4,7 @@ from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from src.config.environments import Environment
+from src.domain.entities.permissions import Role
 
 
 class Settings(BaseSettings):
@@ -36,6 +37,7 @@ class Settings(BaseSettings):
     ENABLE_MEMORY: bool = True
     WORKSPACE_PATH: str = "."
     ENABLE_PYTHON_CODE: bool = False
+    AGENT_ROLE: Role = Role.USER
     SERPAPI_API_KEY: SecretStr = Field(default=SecretStr(""))
 
     @property

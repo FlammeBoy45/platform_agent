@@ -12,6 +12,20 @@ class ChatAgent(Protocol):
         ...
 
 
+async def _confirm_tool_action(tool_name: str, args: dict[str, object]) -> bool:
+    action = str(args.get("action", "exécuter"))
+    path = str(args.get("path", "")).strip()
+    target = f" sur « {path} »" if path else ""
+    prompt = (
+        f"Confirmer l'action {action}{target} avec l'outil {tool_name} ? [o/N] "
+    )
+    try:
+        answer = await asyncio.to_thread(input, prompt)
+    except EOFError:
+        return False
+    return answer.strip().casefold() in {"o", "oui", "y", "yes"}
+
+
 async def _conversation_loop(agent: ChatAgent) -> None:
     while True:
         try:
@@ -45,7 +59,9 @@ async def main() -> None:
         memory=container.memory_store(),
     )
 
-    agent: AgentRuntime = container.agent_runtime()
+    agent: AgentRuntime = container.agent_runtime(
+        confirmation_handler=_confirm_tool_action
+    )
 
     print("Agent ready.")
     print("Type 'exit' to quit.\n")

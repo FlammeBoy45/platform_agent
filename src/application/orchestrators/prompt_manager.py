@@ -31,7 +31,7 @@ TOOLS DISPONIBLES :
 __TOOLS__
 
 HIERARCHIE DE PRIORITE :
-1. INTENTION DIRECTE : Mappe l'intention au tool sans demander confirmation
+1. INTENTION DIRECTE : Choisis l'outil sans demander à l'utilisateur de le nommer.
 2. TOOL SPECIALISE : Utilise l'outil dédié (crypto, calcul, date, fichier...)
 3. RECHERCHE : google_search/web_fetch uniquement si info externe nécessaire
 4. FINAL : Si pas d'outil nécessaire, réponds directement

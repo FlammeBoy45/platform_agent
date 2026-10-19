@@ -1,13 +1,17 @@
-import pytest
 from pathlib import Path
+from typing import Any
+
+import pytest
+
 from src.application.orchestrators.agent_runtime import AgentRuntime
-from src.infrastructure.tools.tool_registry import ToolRegistry
+from src.domain.entities.permissions import Role
+from src.domain.protocols.logger import LoggerProtocol
+from src.infrastructure.memory.json_memory_store import JsonMemoryStore
 from src.infrastructure.tools.echo_tool import EchoTool
 from src.infrastructure.tools.file_crud_tool import FileCrudTool
-from src.infrastructure.memory.json_memory_store import JsonMemoryStore
-from src.domain.protocols.logger import LoggerProtocol
 from src.infrastructure.tools.python_code_tool import PythonCodeTool
-from typing import Any
+from src.infrastructure.tools.tool_registry import ToolRegistry
+
 
 class FakeLLM:
     def __init__(self, responses: list[str]) -> None:
@@ -21,6 +25,11 @@ class NullLogger(LoggerProtocol):
     def warning(self, m, *a): pass
     def error(self, m, *a): pass
     def critical(self, m, *a): pass
+
+
+async def approve_tool_action(_tool_name: str, _args: dict[str, Any]) -> bool:
+    return True
+
 
 @pytest.mark.asyncio
 async def test_resilience_to_messy_json() -> None:
@@ -58,7 +67,13 @@ async def test_memory_and_tool_integration(tmp_path: Path) -> None:
         '{"tool":"final","args":{"content":"Fichier créé Ada."}}'
     ])
     
-    runtime = AgentRuntime(llm, NullLogger(), registry, memory=memory)
+    runtime = AgentRuntime(
+        llm,
+        NullLogger(),
+        registry,
+        memory=memory,
+        confirmation_handler=approve_tool_action,
+    )
     
     # Étape 1 : Mémorisation (gérée par le runtime via regex)
     await runtime.run("Je m'appelle Ada")
@@ -104,7 +119,12 @@ async def test_python_tool_security_penetration() -> None:
     llm_attack_1 = FakeLLM([
         '{"tool":"python_code","args":{"code":"import os; print(os.name)"}}'
     ])
-    runtime = AgentRuntime(llm_attack_1, NullLogger(), registry)
+    runtime = AgentRuntime(
+        llm_attack_1,
+        NullLogger(),
+        registry,
+        current_role=Role.ADMIN,
+    )
     response = await runtime.run("execute python: import os")
     
     assert response == "Import interdit: os"
@@ -113,13 +133,23 @@ async def test_python_tool_security_penetration() -> None:
     llm_attack_2 = FakeLLM([
         '{"tool":"python_code","args":{"code":"f = open(\'src/application/orchestrators/agent_runtime.py\'); print(f.read())"}}'
     ])
-    runtime = AgentRuntime(llm_attack_2, NullLogger(), registry)
+    runtime = AgentRuntime(
+        llm_attack_2,
+        NullLogger(),
+        registry,
+        current_role=Role.ADMIN,
+    )
     response = await runtime.run("python code: lis le code source")
     
     assert "name 'open' is not defined" in response
 
     # Scénario 3 : Code légitime (doit passer)
     llm_safe = FakeLLM(['{"tool":"python_code","args":{"code":"print(sum([1, 2, 3]))"}}'])
-    runtime = AgentRuntime(llm_safe, NullLogger(), registry)
+    runtime = AgentRuntime(
+        llm_safe,
+        NullLogger(),
+        registry,
+        current_role=Role.ADMIN,
+    )
     response = await runtime.run("execute python: fais une somme")
     assert "6" in response

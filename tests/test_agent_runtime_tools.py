@@ -4,7 +4,10 @@ from typing import Any
 import pytest
 
 import src.application.orchestrators.agent_runtime as agent_runtime_module
-from src.application.orchestrators.agent_runtime import AgentRuntime
+from src.application.orchestrators.agent_runtime import (
+    AgentRuntime,
+    ToolAuthorizationError,
+)
 from src.config.settings import Settings
 from src.domain.protocols.logger import LoggerProtocol
 from src.infrastructure.tools.calculator_tool import CalculatorTool
@@ -355,12 +358,108 @@ async def test_informal_module_request_creates_empty_python_file(
         NullLogger(),
         registry,
         enable_memory=True,
+        confirmation_handler=lambda _tool_name, _args: _approve_tool_action(),
     )
 
     result = await runtime.run("fais-moi le modou fichier auth meme vide stp")
 
     assert result == "Fichier cree: auth.py"
     assert (tmp_path / "auth.py").read_text(encoding="utf-8") == ""
+
+
+async def _approve_tool_action() -> bool:
+    return True
+
+
+@pytest.mark.asyncio
+async def test_file_write_requires_confirmation_and_denial_prevents_execution(
+    tmp_path: Path,
+) -> None:
+    registry = ToolRegistry()
+    tool = FileCrudTool(root=tmp_path)
+    registry.register(tool)
+    runtime = build_runtime([])
+
+    with pytest.raises(ToolAuthorizationError, match="confirmation utilisateur"):
+        await runtime._run_tool(
+            tool,
+            {"action": "create", "path": "note.txt", "content": "secret"},
+            "crée note.txt",
+            "trace",
+        )
+
+    assert not (tmp_path / "note.txt").exists()
+
+    denied_runtime = AgentRuntime(
+        FakeLLM([]),
+        NullLogger(),
+        registry,
+        confirmation_handler=lambda _tool_name, _args: _deny_tool_action(),
+    )
+    with pytest.raises(ToolAuthorizationError, match="confirmation refusée"):
+        await denied_runtime._run_tool(
+            tool,
+            {"action": "create", "path": "note.txt", "content": "secret"},
+            "crée note.txt",
+            "trace",
+        )
+
+    assert not (tmp_path / "note.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_denied_confirmation_stops_runtime_before_file_write(
+    tmp_path: Path,
+) -> None:
+    registry = ToolRegistry()
+    registry.register(FileCrudTool(root=tmp_path))
+    runtime = AgentRuntime(
+        FakeLLM([
+            (
+                '{"goal":"créer note.txt","tasks":'
+                '[{"description":"créer note.txt","status":"pending"}]}'
+            ),
+            (
+                '{"tool":"file_crud","args":'
+                '{"action":"create","path":"note.txt","content":"contenu"}}'
+            ),
+        ]),
+        NullLogger(),
+        registry,
+        enable_memory=False,
+        confirmation_handler=lambda _tool_name, _args: _deny_tool_action(),
+    )
+
+    response = await runtime.run("crée le fichier note.txt")
+
+    assert "confirmation refusée" in response
+    assert not (tmp_path / "note.txt").exists()
+
+
+async def _deny_tool_action() -> bool:
+    return False
+
+
+@pytest.mark.asyncio
+async def test_file_read_does_not_prompt_for_confirmation(tmp_path: Path) -> None:
+    target = tmp_path / "note.txt"
+    target.write_text("contenu", encoding="utf-8")
+    tool = FileCrudTool(root=tmp_path)
+    registry = ToolRegistry()
+    registry.register(tool)
+    runtime = AgentRuntime(
+        FakeLLM([]),
+        NullLogger(),
+        registry,
+        confirmation_handler=lambda _tool_name, _args: _deny_tool_action(),
+    )
+
+    assert await runtime._run_tool(
+        tool,
+        {"action": "read", "path": "note.txt", "content": ""},
+        "lis note.txt",
+        "trace",
+    ) == "contenu"
 
 
 @pytest.mark.asyncio
