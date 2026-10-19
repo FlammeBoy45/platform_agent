@@ -2,6 +2,7 @@
 
 from typing import Any
 import json
+import uuid
 from datetime import datetime
 
 from .episodic_store import EpisodicMemory
@@ -46,7 +47,7 @@ class MemoryV2:
                 output = str(output)
 
         self.episodic_store.remember(
-            key=user_input,
+            key=str(uuid.uuid4()),
             value=output,
             text=f"Q:{user_input} | A:{output}"
         )
@@ -62,7 +63,7 @@ class MemoryV2:
 
     def store_skill(self, task: str, steps: list[str], success: bool) -> None:
         self.procedural_store.remember(
-            key=task,
+            key=str(uuid.uuid4()),
             value=json.dumps({"steps": steps, "success": success}),
             text=f"Tâche: {task} | Étapes: {', '.join(steps)}"
         )

@@ -5,6 +5,7 @@ import pytest
 
 from src.infrastructure.tools.calculator_tool import CalculatorTool
 from src.infrastructure.tools.datetime_tool import DateTimeTool
+from src.infrastructure.tools.google_search_tool import GoogleSearchTool
 from src.infrastructure.tools.python_code_tool import PythonCodeTool
 from src.infrastructure.tools.text_stats_tool import TextStatsTool
 from src.infrastructure.tools.web_fetch_tool import WebFetchTool
@@ -86,6 +87,23 @@ async def test_python_code_tool_reports_runtime_errors() -> None:
 
 
 @pytest.mark.asyncio
+async def test_python_code_tool_times_out_infinite_loops() -> None:
+    tool = PythonCodeTool()
+    tool.timeout_seconds = 0.2
+
+    result = await tool.execute(code="while True:\n    pass")
+
+    assert "TimeoutError" in result
+
+
+@pytest.mark.asyncio
+async def test_python_code_tool_blocks_attribute_introspection() -> None:
+    result = await PythonCodeTool().execute(code="print((1).__class__)")
+
+    assert "accès aux attributs interdit" in result
+
+
+@pytest.mark.asyncio
 async def test_python_code_tool_blocks_dangerous_imports() -> None:
     tool = PythonCodeTool()
 
@@ -129,3 +147,78 @@ async def test_web_fetch_reads_html_text(monkeypatch: pytest.MonkeyPatch) -> Non
     result = await tool.execute(url="https://example.com")
 
     assert "Hello web" in result
+
+
+@pytest.mark.asyncio
+async def test_google_search_uses_duckduckgo_without_serpapi(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    html = """
+    <a class="result__a"
+       href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Ffloby">
+      Floby - artiste
+    </a>
+    <a class="result__snippet">Un artiste burkinabè.</a>
+    """
+
+    class FakeClient:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> "FakeClient":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            pass
+
+        async def get(
+            self, url: str, params: dict[str, str]
+        ) -> httpx.Response:
+            assert url == "https://html.duckduckgo.com/html/"
+            assert params == {"q": "Floby"}
+            return httpx.Response(
+                200,
+                text=html,
+                request=httpx.Request("GET", url),
+            )
+
+    monkeypatch.delenv("SERPAPI_API_KEY", raising=False)
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+
+    result = await GoogleSearchTool().execute(query="Floby")
+
+    assert "DuckDuckGo, sans SerpApi" in result
+    assert "Floby - artiste" in result
+    assert "Un artiste burkinabè." in result
+    assert "https://example.com/floby" in result
+
+
+@pytest.mark.asyncio
+async def test_google_search_reports_when_public_search_requires_verification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeClient:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        async def __aenter__(self) -> "FakeClient":
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            pass
+
+        async def get(
+            self, url: str, params: dict[str, str]
+        ) -> httpx.Response:
+            return httpx.Response(
+                202,
+                text="verification required",
+                request=httpx.Request("GET", url),
+            )
+
+    monkeypatch.delenv("SERPAPI_API_KEY", raising=False)
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+
+    result = await GoogleSearchTool().execute(query="Floby")
+
+    assert "DuckDuckGo a demande une verification" in result

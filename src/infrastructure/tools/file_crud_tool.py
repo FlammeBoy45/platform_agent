@@ -1,3 +1,4 @@
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,8 @@ class FileCrudTool:
     return_direct = True
     trigger_words: tuple[str, ...] = (
         "fichier",
+        "module",
+        "modou",
         "file",
         "créer",
         "creer",
@@ -60,6 +63,58 @@ class FileCrudTool:
 
     def __init__(self, root: str | Path | None = None) -> None:
         self.root = Path(root or Path.cwd()).resolve()
+
+    def infer_args(self, user_input: str, args: dict[str, Any]) -> dict[str, Any]:
+        inferred = dict(args)
+        normalized = user_input.casefold()
+
+        if not inferred.get("action"):
+            if re.search(r"\b(supprime|supprimer|efface|effacer|delete)\b", normalized):
+                inferred["action"] = "delete"
+            elif re.search(r"\b(modifie|modifier|ajoute|ajouter|append)\b", normalized):
+                inferred["action"] = "update"
+            elif re.search(r"\b(lis|lire|ouvre|ouvrir|read)\b", normalized):
+                inferred["action"] = "read"
+            else:
+                inferred["action"] = "create"
+
+        if not inferred.get("path"):
+            module_match = re.search(
+                r"\b(?:module|modou)\s+(?:fichier\s+)?(?:nomm[eé]\s+)?"
+                r"(?:[`'\"](?P<quoted>[^`'\"]+)[`'\"]|(?P<name>[a-zA-Z_][\w.-]*))",
+                user_input,
+                flags=re.IGNORECASE,
+            )
+            file_match = re.search(
+                r"\bfichier\s+(?:nomm[eé]\s+)?(?:[`'\"](?P<quoted>[^`'\"]+)"
+                r"[`'\"]|(?P<name>[a-zA-Z_][\w.-]*))",
+                user_input,
+                flags=re.IGNORECASE,
+            )
+            explicit_path = re.search(
+                r"""[`'"]([^`'"]+\.[a-zA-Z0-9]{1,8})[`'"]"""
+                r"""|(?<![\w/])([\w./\\-]+\.[a-zA-Z0-9]{1,8})\b""",
+                user_input,
+            )
+
+            if module_match:
+                name = module_match.group("quoted") or module_match.group("name")
+                if not Path(name).suffix:
+                    name = f"{name}.py"
+                inferred["path"] = name
+            elif explicit_path:
+                inferred["path"] = next(
+                    group for group in explicit_path.groups() if group
+                )
+            elif file_match:
+                inferred["path"] = (
+                    file_match.group("quoted") or file_match.group("name")
+                )
+
+        if "content" not in inferred or inferred["content"] is None:
+            inferred["content"] = ""
+
+        return inferred
 
     async def execute(self, **kwargs: Any) -> str:
         action = str(kwargs.get("action", "")).strip().lower()

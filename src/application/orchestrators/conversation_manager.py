@@ -11,9 +11,11 @@ class ConversationManager:
 
     def add_user_message(self, content: str) -> None:
         self.state.messages.append(Message(role="user", content=content))
+        self.trim_history()
 
     def add_assistant_message(self, content: str) -> None:
         self.state.messages.append(Message(role="assistant", content=content))
+        self.trim_history()
 
     def get_messages_as_dicts(self) -> list[dict[str, str]]:
         return [

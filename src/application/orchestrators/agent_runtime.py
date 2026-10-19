@@ -1,5 +1,6 @@
-import uuid
 import re
+import time
+import uuid
 from typing import Any
 
 from tenacity import (
@@ -8,24 +9,23 @@ from tenacity import (
     wait_exponential,
 )
 
-from src.application.orchestrators.conversation_manager import ConversationManager
-from src.domain.entities.permissions import PermissionManager, Role
-from src.application.orchestrators.evaluator import ActionEvaluator
-import time
-from src.application.orchestrators.reflector import Reflector
-from src.application.memory_v2.working_memory import WorkingMemory
-from src.application.orchestrators.memory_manager import MemoryManager
-from src.application.orchestrators.prompt_manager import PromptManager
-from src.application.orchestrators.response_parser import ResponseParser
-from src.application.orchestrators.tool_executor import ToolExecutionError, ToolExecutor
-from src.application.orchestrators.planner import Planner
-from src.application.orchestrators.scheduler import Scheduler
 from src.application.memory_v2.memory_v2 import MemoryV2
+from src.application.memory_v2.working_memory import WorkingMemory
+from src.application.orchestrators.conversation_manager import ConversationManager
+from src.application.orchestrators.evaluator import ActionEvaluator
+from src.application.orchestrators.memory_manager import MemoryManager
+from src.application.orchestrators.planner import Planner
+from src.application.orchestrators.prompt_manager import PromptManager
+from src.application.orchestrators.reflector import Reflector
+from src.application.orchestrators.response_parser import ResponseParser
+from src.application.orchestrators.scheduler import Scheduler
+from src.application.orchestrators.tool_executor import ToolExecutionError, ToolExecutor
+from src.domain.entities.permissions import PermissionManager, Role
 from src.domain.entities.plan import Plan
 from src.domain.protocols.event_bus import EventBus
 from src.domain.protocols.llm_provider import LLMProvider
 from src.domain.protocols.logger import LoggerProtocol
-from src.domain.protocols.memory import LongTermMemory
+from src.domain.protocols.memory import AgentMemory, LongTermMemory
 from src.domain.protocols.tool import Tool, ToolProvider
 
 
@@ -42,6 +42,8 @@ class AgentRuntime:
         event_bus: EventBus | None = None,
         parser: ResponseParser | None = None,
         prompter: PromptManager | None = None,
+        enable_memory: bool = True,
+        memory_v2: AgentMemory | None = None,
     ) -> None:
 
         self.llm = llm
@@ -57,12 +59,19 @@ class AgentRuntime:
         self.memory_manager = MemoryManager(memory)
         self.parser = parser or ResponseParser(logger)
         self.prompter = prompter or PromptManager()
-        self.memory_v2 = MemoryV2()
+        self.memory_v2: AgentMemory | None = None
+        if enable_memory:
+            if memory_v2 is not None:
+                self.memory_v2 = memory_v2
+            elif isinstance(memory, AgentMemory):
+                self.memory_v2 = memory
+            else:
+                self.memory_v2 = MemoryV2()
         self.reflector = Reflector(self.llm)  # ✅
         self.executor = executor or ToolExecutor(tools, logger, event_bus=event_bus)
 
         self.scheduler = Scheduler()
-        self.planner = Planner(self.llm, self.parser)
+        self.planner = Planner(self.llm, self.parser, memory_v2=self.memory_v2)
         self.working_memory = WorkingMemory(ttl_seconds=300)
 
         self.current_plan: Plan | None = None
@@ -144,27 +153,6 @@ class AgentRuntime:
         )
 
     # ============================================================
-    # LEARNING
-    # ============================================================
-
-    async def _learn_facts_from_response(self, user_input: str, response: str) -> None:
-        """Extrait et stocke les faits mentionnés dans la réponse du LLM."""
-        fact_patterns = [
-            "est un", "est une", "signifie", "se trouve", "capitale",
-            "président", "date de", "créé en", "fondé en", "inventé par"
-        ]
-
-        for pattern in fact_patterns:
-            if pattern in response.lower():
-                sentences = response.replace("!", ".").replace("?", ".").split(".")
-                for sentence in sentences:
-                    if pattern in sentence.lower():
-                        fact = sentence.strip()
-                        if 10 < len(fact) < 300:
-                            self.memory_v2.store_fact(fact, importance=0.6)
-                            self.logger.debug(f"Fait appris: {fact}")
-
-    # ============================================================
     # LOOP DETECTION
     # ============================================================
 
@@ -188,13 +176,14 @@ class AgentRuntime:
     def _has_action_intent(self, user_input: str) -> bool:
         """Détecte si l'utilisateur demande une action."""
         action_keywords = [
-            "créer", "crée", "cree", "creer", "supprimer", "supprime",
-            "effacer", "efface", "modifier", "modifie", "ajouter", "ajoute",
-            "écrire", "ecrire", "lis", "lire", "lit", "déplacer", "copier",
-            "calcule", "cherche", "recherche", "google", "internet", "web",
-            "prix", "cours", "valeur", "script", "code", "python", "programme",
-            "fonction", "algorithme", "heure", "date", "aujourd'hui", "demain", # ✅
-            "heure", "date", "aujourd'hui", "demain"  # ✅
+            "créer", "crée", "cree", "creer", "fais", "faire", "prépare",
+            "préparer", "prepare", "preparer", "ponds", "implémente",
+            "implemente", "supprimer", "supprime", "effacer", "efface",
+            "modifier", "modifie", "ajouter", "ajoute", "écrire", "ecrire",
+            "lis", "lire", "lit", "déplacer", "copier", "calcule", "cherche",
+            "recherche", "google", "internet", "web", "prix", "cours", "valeur",
+            "script", "code", "python", "programme", "fonction", "algorithme",
+            "heure", "date", "aujourd'hui", "demain",
         ]
         ui = user_input.lower()
         return any(kw in ui for kw in action_keywords)
@@ -203,12 +192,24 @@ class AgentRuntime:
         """Retourne le tool et les args forcés selon l'intention détectée."""
         ui = user_input.lower()
 
-        file_keywords = ["fichier", "file", "dossier", "folder", "répertoire", "repertoire",
-                         "créer", "crée", "cree", "creer", "supprimer", "supprime",
-                         "effacer", "efface", "lis", "lire", "lit", "modifier", "modifie",
-                         "écrire", "ecrire", "ajouter", "ajoute"]
-        if any(kw in ui for kw in file_keywords):
-            return ("file_crud", {"action": "create", "path": "", "content": ""})
+        file_targets = (
+            "fichier", "file", "module", "modou", "dossier", "folder",
+            "répertoire", "repertoire",
+        )
+        file_actions = (
+            "crée", "créer", "cree", "creer", "fais", "faire", "prépare",
+            "préparer", "prepare", "preparer", "ajoute", "ajouter", "écris",
+            "ecris", "écrire", "ecrire", "lis", "lire", "ouvre", "ouvrir",
+            "modifie", "modifier", "supprime", "supprimer", "efface", "effacer",
+        )
+        if any(word in ui for word in file_targets) and any(
+            word in ui for word in file_actions
+        ):
+            return ("file_crud", {"action": "", "path": "", "content": ""})
+        if re.search(r"\.[a-z0-9]{1,8}\b", ui) and any(
+            word in ui for word in file_actions
+        ):
+            return ("file_crud", {"action": "", "path": "", "content": ""})
 
         calc_keywords = ["calcule", "calcul", "combien fait", "additionne", "multiplie",
                          "divise", "soustrait", "pourcentage"]
@@ -227,6 +228,11 @@ class AgentRuntime:
 
         search_keywords = ["cherche", "recherche", "google", "internet", "web"]
         if any(kw in ui for kw in search_keywords):
+            if any(phrase in ui for phrase in (
+                "dans le code", "dans les fichiers", "dans le projet",
+                "où est défini", "ou est defini",
+            )):
+                return ("workspace_search", {"query": user_input, "path": "."})
             return ("google_search", {"query": user_input})
         
         code_keywords = ["script", "code", "python", "programme", "fonction", "algorithme"]
@@ -249,6 +255,45 @@ class AgentRuntime:
             )
 
         return None
+
+    def _answer_memory_list_if_requested(self, user_input: str) -> str | None:
+        normalized = user_input.casefold()
+        memory_phrases = (
+            "montre ma mémoire",
+            "montre ta mémoire",
+            "montre-moi ma mémoire",
+            "montre-moi ta mémoire",
+            "affiche ma mémoire",
+            "affiche ta mémoire",
+            "affiche-moi ma mémoire",
+            "affiche-moi ta mémoire",
+            "affiche moi la mémoire",
+            "qu'as-tu retenu",
+            "qu’est-ce que tu as retenu",
+            "qu'est-ce que tu as retenu",
+            "qu'est-ce que tu sais sur moi",
+            "qu’est-ce que tu sais sur moi",
+            "que sais-tu sur moi",
+            "montre les souvenirs",
+            "affiche les souvenirs",
+        )
+        if not any(phrase in normalized for phrase in memory_phrases):
+            return None
+
+        memory = self.memory_manager.memory
+        if memory is None or not hasattr(memory, "list_recent"):
+            return "La mémoire persistante n'est pas activée."
+
+        facts = memory.list_recent(limit=20)
+        if not facts:
+            return "Je n'ai encore rien mémorisé."
+
+        entries = ["Voici mes souvenirs récents :"]
+        entries.extend(
+            f"- {' '.join(fact.text.split())}"
+            for fact in facts
+        )
+        return "\n".join(entries)
 
     async def _run_tool(self, tool: Tool, args: dict[str, Any], user_input: str, trace_id: str) -> str:
         # ✅ Vérification RBAC
@@ -273,6 +318,13 @@ class AgentRuntime:
     async def run(self, user_input: str, max_steps: int = 10) -> str:
         trace_id = str(uuid.uuid4())
 
+        # Every user request gets a fresh plan and retry budget. Conversation
+        # history remains available to the LLM, but stale task state does not.
+        self.current_plan = None
+        self._retry_count = 0
+        self._last_responses = []
+        self._loop_count = 0
+
         self.logger.info(f"Autonomous session started | trace_id={trace_id}")
 
         metrics = self.evaluator.start_session(trace_id, user_input)
@@ -283,21 +335,74 @@ class AgentRuntime:
                 {"trace_id": trace_id, "user_input": user_input},
             )
 
-        # MEMORY WRITE (INPUT)
-        self.memory_v2.store_episode(user_input, {"type": "input"})
+        previous_user_input = next(
+            (
+                message["content"]
+                for message in reversed(self.conversation.get_messages_as_dicts())
+                if message["role"] == "user"
+            ),
+            None,
+        )
         self.conversation.add_user_message(user_input)
-        self.memory_manager.learn_facts(user_input)
+
+        forget_result = self.memory_manager.forget_requested_memory(user_input)
+        if forget_result is not None:
+            _, removed = forget_result
+            if self.memory_manager.memory is None:
+                response = "La mémoire persistante est désactivée."
+            else:
+                response = (
+                    "J'ai oublié le souvenir demandé."
+                    if removed
+                    else "Je n'ai trouvé aucun souvenir correspondant."
+                )
+            self.conversation.add_assistant_message(response)
+            return response
+
+        remembered_fact = self.memory_manager.learn_facts(user_input)
+        save_memory_request = self.memory_manager.is_save_memory_request(user_input)
+        if remembered_fact or save_memory_request:
+            if self.memory_manager.memory is None:
+                response = "La mémoire persistante est désactivée; je ne peux pas l'enregistrer."
+            elif remembered_fact:
+                response = "C'est noté, je l'ai enregistré dans ma mémoire persistante."
+            else:
+                saved_fact = self.memory_manager.save_previous_statement(
+                    user_input, previous_user_input
+                )
+                response = (
+                    "C'est noté, je l'ai enregistré dans ma mémoire persistante."
+                    if saved_fact
+                    else "Quel souvenir veux-tu que j'enregistre ?"
+                )
+
+            self.conversation.add_assistant_message(response)
+            if self.memory_v2:
+                self.memory_v2.store_episode(
+                    user_input, {"type": "memory_write", "output": response}
+                )
+            return response
+
+        memory_response = self._answer_memory_list_if_requested(user_input)
+        if memory_response:
+            return memory_response
 
         # TOOL SHORTCUT
         tools_response = self._answer_tools_list_if_requested(user_input)
         if tools_response:
-            self.memory_v2.store_episode(user_input, {"type": "tool_list", "output": tools_response})
+            if self.memory_v2:
+                self.memory_v2.store_episode(
+                    user_input, {"type": "tool_list", "output": tools_response}
+                )
             return tools_response
 
         # MEMORY SHORTCUT
         memory_response = self.memory_manager.answer_from_memory(user_input)
         if memory_response:
-            self.memory_v2.store_episode(user_input, {"type": "memory_hit", "output": memory_response})
+            if self.memory_v2:
+                self.memory_v2.store_episode(
+                    user_input, {"type": "memory_hit", "output": memory_response}
+                )
             return memory_response
 
         # PLAN INIT
@@ -313,9 +418,9 @@ class AgentRuntime:
             task_query = task.description if task else user_input
 
             # MEMORY RETRIEVAL
-            retrieved = self.memory_v2.retrieve(task_query)
+            retrieved = self.memory_v2.retrieve(task_query) if self.memory_v2 else []
             memory_context = "\n".join(
-                f"- {getattr(m, 'content', str(m))}"
+                f"- {getattr(m, 'content', getattr(m, 'text', str(m)))}"
                 for m in retrieved[:5]
             )
 
@@ -432,20 +537,18 @@ class AgentRuntime:
 
                 self.conversation.add_assistant_message(response)
 
-                await self._learn_facts_from_response(user_input, response)
-
-                self.memory_v2.store_episode(user_input, {
-                    "type": "final",
-                    "output": response,
-                    "task": task.description if task else None,
-                })
+                if self.memory_v2:
+                    self.memory_v2.store_episode(user_input, {
+                        "type": "final",
+                        "output": response,
+                        "task": task.description if task else None,
+                    })
 
                 if task:
                     task.status = "completed"
 
                 # ✅ MÉTRIQUES FIN DE SESSION
-                summary = self.evaluator.end_session(metrics)
-                self.logger.info(f"\n{summary}")
+                self.evaluator.end_session(metrics)
 
                 return response
 
@@ -457,10 +560,11 @@ class AgentRuntime:
                     system_prompt,
                     "Réponds directement à l'utilisateur."
                 )
-                self.memory_v2.store_episode(user_input, {
-                    "type": "direct",
-                    "output": response,
-                })
+                if self.memory_v2:
+                    self.memory_v2.store_episode(user_input, {
+                        "type": "direct",
+                        "output": response,
+                    })
                 return response
 
             # =========================
@@ -593,7 +697,7 @@ class AgentRuntime:
             # =========================
             # SKILL MEMORY
             # =========================
-            if success and tool:
+            if success and tool and self.memory_v2:
                 self.memory_v2.store_skill(
                     task=tool_name,
                     steps=[task.description if task else tool_name, tool_name],
@@ -605,12 +709,13 @@ class AgentRuntime:
                     str(observation)[:200]
                 )
             # EPISODIC MEMORY
-            self.memory_v2.store_episode(user_input, {
-                "type": "tool_execution",
-                "tool": tool_name,
-                "output": observation,
-                "success": success,
-            })
+            if self.memory_v2:
+                self.memory_v2.store_episode(user_input, {
+                    "type": "tool_execution",
+                    "tool": tool_name,
+                    "output": observation,
+                    "success": success,
+                })
 
             # RETURN DIRECT TOOL
             if tool and tool.return_direct:

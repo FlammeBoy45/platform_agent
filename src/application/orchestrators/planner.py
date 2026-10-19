@@ -1,7 +1,7 @@
 from src.domain.entities.plan import Plan, Task
 from src.domain.protocols.llm_provider import LLMProvider
 from src.application.orchestrators.response_parser import ResponseParser
-from src.application.memory_v2.memory_v2 import MemoryV2
+from src.domain.protocols.memory import AgentMemory
 
 
 class Planner:
@@ -9,7 +9,7 @@ class Planner:
         self,
         llm: LLMProvider,
         parser: ResponseParser,
-        memory_v2: MemoryV2 | None = None,
+        memory_v2: AgentMemory | None = None,
     ):
         self.llm = llm
         self.parser = parser

@@ -46,6 +46,14 @@ class PermissionManager:
             ),
             "google_search": ToolPermission("google_search", [Role.ADMIN, Role.USER]),
             "web_fetch": ToolPermission("web_fetch", [Role.ADMIN, Role.USER]),
+            "memory": ToolPermission(
+                "memory",
+                [Role.ADMIN, Role.USER, Role.READONLY],
+            ),
+            "workspace_search": ToolPermission(
+                "workspace_search",
+                [Role.ADMIN, Role.USER, Role.READONLY],
+            ),
         }
 
     def can_execute(self, tool_name: str) -> bool:

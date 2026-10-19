@@ -37,10 +37,15 @@ HIERARCHIE DE PRIORITE :
 4. FINAL : Si pas d'outil nécessaire, réponds directement
 
 REGLES :
+- Comprends les demandes formulees naturellement, familièrement, avec des abreviations ou des fautes de frappe. Cherche l'intention plutot que de corriger la forme.
+- Si un message est court mais nomme un sujet suivi de "?", "???" ou d'une formulation incomplete, donne l'interpretation la plus probable en signalant l'incertitude; demande une precision seulement si elle change vraiment l'action a effectuer.
+- MEMOIRE : Quand l'utilisateur dit "souviens-toi", "retiens", "ecris-le dans tes memoires" ou une formule similaire, utilise la memoire persistante de l'agent. Ne cree jamais de fichier pour sauvegarder un souvenir et ne pretend pas qu'il est garde si la memoire est desactivee.
 - Réponds UNIQUEMENT en JSON valide, pas de markdown
 - Choisis le tool TOI-MÊME, ne demande jamais à l'utilisateur "quel tool utiliser"
 - Si l'utilisateur dit "fais X", utilise le tool qui fait X
 - FICHIER : Si l'utilisateur demande de créer/lire/modifier/supprimer un fichier ou dossier, utilise OBLIGATOIREMENT l'outil 'file_crud'. Ne réponds JAMAIS "fichier créé" sans avoir appelé l'outil.
+- WORKSPACE : Le dossier de travail est celui configuré par WORKSPACE_PATH (par défaut, la racine du projet), pas un dossier temporaire ni `data/workspace`. Les chemins des outils sont relatifs à cette racine.
+- VERITE DES FICHIERS : N'invente jamais un dossier, un chemin, un fichier ou son contenu. Vérifie avec `file_list`/`file_crud`; affirme une création ou modification uniquement après le succès de l'outil. Ne crée un dossier que si l'utilisateur le demande. Pour un nouveau fichier sans chemin clair, choisis un emplacement existant pertinent dans le projet; si aucun n'est évident, demande où le mettre.
 - ARGS : Remplis TOUJOURS tous les champs obligatoires du tool. JAMAIS d'args vide {}.
 - Si échec, analyse et propose une alternative
 - Format: {"thought": "...", "tool": "nom_outil", "args": {...}, "plan": {...}}
@@ -96,9 +101,15 @@ class PromptManager:
         if not memory:
             return "- aucune mémoire disponible"
         
-        facts = memory.search(user_input)
-        if not facts:
-            facts = memory.all()[:3]
+        normalized_input = user_input.casefold()
+        facts = memory.search(user_input, limit=8)
+        asks_about_memory = any(marker in normalized_input for marker in (
+            "souviens", "retiens", "mémoire", "memorise", "préférence", "prefere",
+            "que sais-tu de moi", "qu'est-ce que tu sais sur moi", "qu'est-ce que tu te rappelles",
+            "de quoi te souviens-tu",
+        ))
+        if not facts and asks_about_memory:
+            facts = memory.all()[-8:]
             
         if not facts:
             return "- aucun fait mémorisé"

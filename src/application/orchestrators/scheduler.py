@@ -3,7 +3,12 @@ from src.domain.entities.plan import Plan
 
 class Scheduler:
     def get_next_task(self, plan: Plan):
-        completed = {t.id for t in plan.tasks if t.status == "completed"}
+        completed = {
+            identifier
+            for task in plan.tasks
+            if task.status == "completed"
+            for identifier in (task.id, task.description)
+        }
 
         for task in plan.tasks:
             if task.status != "pending":

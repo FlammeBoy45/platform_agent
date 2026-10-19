@@ -1,13 +1,18 @@
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+import src.application.orchestrators.agent_runtime as agent_runtime_module
 from src.application.orchestrators.agent_runtime import AgentRuntime
+from src.config.settings import Settings
 from src.domain.protocols.logger import LoggerProtocol
 from src.infrastructure.tools.calculator_tool import CalculatorTool
 from src.infrastructure.tools.datetime_tool import DateTimeTool
 from src.infrastructure.tools.default_tools import register_default_tools
 from src.infrastructure.tools.echo_tool import EchoTool
+from src.infrastructure.tools.file_crud_tool import FileCrudTool
+from src.infrastructure.tools.file_list_tool import FileListTool
 from src.infrastructure.tools.text_stats_tool import TextStatsTool
 from src.infrastructure.tools.tool_registry import ToolRegistry
 
@@ -262,9 +267,100 @@ async def test_tools_list_is_answered_without_llm_tool_confusion() -> None:
 def test_default_tools_include_web_fetch() -> None:
     registry = ToolRegistry()
 
-    register_default_tools(registry)
+    settings = Settings(
+        WORKSPACE_PATH="sandbox",
+        ENABLE_PYTHON_CODE=False,
+        SERPAPI_API_KEY="",
+    )
+    register_default_tools(registry, settings)
 
     assert registry.get("web_fetch") is not None
+    assert registry.get("google_search") is not None
+    assert registry.get("python_code") is None
+    file_crud = registry.get("file_crud")
+    file_list = registry.get("file_list")
+    assert isinstance(file_crud, FileCrudTool)
+    assert isinstance(file_list, FileListTool)
+    assert file_crud.root.name == "sandbox"
+    assert file_list.root.name == "sandbox"
+
+
+def test_python_code_tool_is_opt_in() -> None:
+    registry = ToolRegistry()
+    settings = Settings(ENABLE_PYTHON_CODE=True, SERPAPI_API_KEY="")
+
+    register_default_tools(registry, settings)
+
+    assert registry.get("python_code") is not None
+
+
+@pytest.mark.asyncio
+async def test_memory_can_be_disabled_without_initializing_persistent_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_if_initialized() -> None:
+        raise AssertionError("MemoryV2 should not initialize when memory is disabled")
+
+    monkeypatch.setattr(agent_runtime_module, "MemoryV2", fail_if_initialized)
+    runtime = AgentRuntime(
+        FakeLLM([
+            '{"goal":"salut","tasks":[{"description":"salut","status":"pending"}]}',
+            '{"tool":"final","args":{"content":"Bonjour !"}}',
+        ]),
+        NullLogger(),
+        ToolRegistry(),
+        enable_memory=False,
+    )
+
+    response = await runtime.run("salut")
+
+    assert response == "Bonjour !"
+
+
+@pytest.mark.asyncio
+async def test_informal_module_request_creates_empty_python_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class NoMemory:
+        def __init__(self) -> None:
+            pass
+
+        def store_episode(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def store_fact(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def store_skill(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def retrieve(self, *args: Any, **kwargs: Any) -> list[Any]:
+            return []
+
+        def retrieve_skills(self, *args: Any, **kwargs: Any) -> list[Any]:
+            return []
+
+    monkeypatch.setattr(agent_runtime_module, "MemoryV2", NoMemory)
+    registry = ToolRegistry()
+    registry.register(FileCrudTool(root=tmp_path))
+    runtime = AgentRuntime(
+        FakeLLM([
+            (
+                '{"goal":"module auth",'
+                '"tasks":[{"description":"module auth","status":"pending"}]}'
+            ),
+            '{"tool":"final","args":{"content":"Je vais preparer le module."}}',
+        ]),
+        NullLogger(),
+        registry,
+        enable_memory=True,
+    )
+
+    result = await runtime.run("fais-moi le modou fichier auth meme vide stp")
+
+    assert result == "Fichier cree: auth.py"
+    assert (tmp_path / "auth.py").read_text(encoding="utf-8") == ""
 
 
 @pytest.mark.asyncio

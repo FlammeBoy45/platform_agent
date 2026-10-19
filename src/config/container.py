@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from dependency_injector import containers, providers
 
 from src.application.orchestrators.agent_runtime import AgentRuntime
@@ -9,6 +11,15 @@ from src.infrastructure.memory.json_memory_store import JsonMemoryStore
 from src.infrastructure.tools.tool_registry import ToolRegistry
 
 
+def _persistent_memory_path(configured_path: str) -> Path:
+    path = Path(configured_path).expanduser()
+    if path.is_absolute():
+        return path
+    # Resolve relative paths from the repository, not the process launch folder.
+    project_root = Path(__file__).resolve().parents[2]
+    return project_root / path
+
+
 class Container(containers.DeclarativeContainer):
     settings = providers.Singleton(get_settings)
 
@@ -17,8 +28,9 @@ class Container(containers.DeclarativeContainer):
     tool_registry = providers.Singleton(ToolRegistry)
 
     memory_store = providers.Singleton(
-        JsonMemoryStore,
-        path=providers.Callable(lambda s: s.MEMORY_PATH, settings),
+        lambda s: JsonMemoryStore(_persistent_memory_path(s.MEMORY_PATH))
+        if s.ENABLE_MEMORY else None,
+        settings,
     )
 
     llm_provider = providers.Selector(
@@ -58,4 +70,6 @@ class Container(containers.DeclarativeContainer):
         logger=logger,
         tools=tool_registry,
         memory=memory_store,
+        memory_v2=memory_store,
+        enable_memory=providers.Callable(lambda s: s.ENABLE_MEMORY, settings),
     )

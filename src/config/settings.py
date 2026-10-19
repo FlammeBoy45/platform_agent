@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     MAX_RETRIES: int = 3
 
     MEMORY_PATH: str = "data/memory.json"
+    ENABLE_MEMORY: bool = True
+    WORKSPACE_PATH: str = "."
+    ENABLE_PYTHON_CODE: bool = False
+    SERPAPI_API_KEY: SecretStr = Field(default=SecretStr(""))
 
     @property
     def is_dev(self) -> bool:
@@ -47,7 +51,7 @@ class Settings(BaseSettings):
         return self.APP_ENV == Environment.TESTING
 
     GROQ_API_KEY: SecretStr = Field(default=SecretStr(""))
-    GROQ_MODEL: str = "llama-3.1-8b-instant"
+    GROQ_MODEL: str = "openai/gpt-oss-20b"
 
 
 @lru_cache(maxsize=1)

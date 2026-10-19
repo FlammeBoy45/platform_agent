@@ -52,6 +52,19 @@ async def test_file_crud_rejects_protected_files(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_file_crud_scaffolds_informal_module_request(tmp_path: Path) -> None:
+    tool = FileCrudTool(root=tmp_path)
+    user_input = "fais-moi le modou fichier auth meme vide stp"
+    args = tool.infer_args(user_input, {"action": "", "path": "", "content": ""})
+
+    result = await tool.execute(**args)
+
+    assert args == {"action": "create", "path": "auth.py", "content": ""}
+    assert result == "Fichier cree: auth.py"
+    assert (tmp_path / "auth.py").read_text(encoding="utf-8") == ""
+
+
+@pytest.mark.asyncio
 async def test_file_list_lists_workspace_files(tmp_path: Path) -> None:
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "main.py").write_text("print('ok')", encoding="utf-8")
