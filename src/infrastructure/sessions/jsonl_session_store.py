@@ -27,7 +27,9 @@ class JsonlSessionStore:
             content = event.get("data", {}).get("content")
             if isinstance(content, str):
                 messages.append({"role": role, "content": content})
-        return messages[-max(0, limit) :] if limit else []
+        if limit <= 0:
+            return []
+        return messages[-limit:]
 
     def append_event(self, event_type: str, data: dict[str, Any]) -> None:
         event = {

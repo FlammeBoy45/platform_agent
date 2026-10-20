@@ -13,6 +13,7 @@ from src.application.orchestrators.agent_runtime import (
 from src.config.settings import Settings
 from src.domain.protocols.local_event_bus import LocalEventBus
 from src.domain.protocols.logger import LoggerProtocol
+from src.infrastructure.sessions.jsonl_session_store import JsonlSessionStore
 from src.infrastructure.tools.calculator_tool import CalculatorTool
 from src.infrastructure.tools.datetime_tool import DateTimeTool
 from src.infrastructure.tools.default_tools import register_default_tools
@@ -546,6 +547,48 @@ async def test_unfinished_plan_resumes_on_explicit_follow_up() -> None:
         "completed",
     ]
     assert len(llm.messages) == 3
+
+
+@pytest.mark.asyncio
+async def test_restarted_runtime_restores_and_completes_saved_plan(
+    tmp_path: Path,
+) -> None:
+    journal_path = tmp_path / "sessions.jsonl"
+    store = JsonlSessionStore(journal_path)
+    store.append_event("user_message", {"content": "ancienne demande"})
+    store.append_event("assistant_message", {"content": "ancienne réponse"})
+    store.append_event(
+        "plan_snapshot",
+        {
+            "plan": {
+                "goal": "Terminer la tâche",
+                "tasks": [{"description": "Répondre", "status": "pending"}],
+            }
+        },
+    )
+
+    restarted_store = JsonlSessionStore(journal_path)
+    llm = FakeLLM(['{"tool":"final","args":{"content":"Tâche terminée."}}'])
+    runtime = AgentRuntime(
+        llm,
+        NullLogger(),
+        ToolRegistry(),
+        enable_memory=False,
+        session_store=restarted_store,
+    )
+
+    assert runtime.conversation.get_messages_as_dicts() == [
+        {"role": "user", "content": "ancienne demande"},
+        {"role": "assistant", "content": "ancienne réponse"},
+    ]
+    assert runtime.current_plan is not None
+    assert await runtime.run("continue") == "Tâche terminée."
+    assert runtime.current_plan.tasks[0].status == "completed"
+    assert restarted_store.load_unfinished_plan() is None
+    assert restarted_store.load_messages()[-2:] == [
+        {"role": "user", "content": "continue"},
+        {"role": "assistant", "content": "Tâche terminée."},
+    ]
 
 
 @pytest.mark.asyncio
