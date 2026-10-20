@@ -1,10 +1,10 @@
 # permissions.py
 
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 
 
-class Role(str, Enum):
+class Role(StrEnum):
     ADMIN = "admin"
     USER = "user"
     READONLY = "readonly"
@@ -13,6 +13,7 @@ class Role(str, Enum):
 @dataclass
 class ToolPermission:
     """Définit les permissions d'accès à un outil."""
+
     tool_name: str
     allowed_roles: list[Role] = field(default_factory=lambda: [Role.ADMIN, Role.USER])
     max_args_size: int = 1000
@@ -29,15 +30,25 @@ class PermissionManager:
     def _default_permissions(self) -> dict[str, ToolPermission]:
         return {
             "echo": ToolPermission("echo", [Role.ADMIN, Role.USER, Role.READONLY]),
-            "calculator": ToolPermission("calculator", [Role.ADMIN, Role.USER, Role.READONLY]),
-            "datetime": ToolPermission("datetime", [Role.ADMIN, Role.USER, Role.READONLY]),
-            "crypto_price": ToolPermission("crypto_price", [Role.ADMIN, Role.USER, Role.READONLY]),
-            "text_stats": ToolPermission("text_stats", [Role.ADMIN, Role.USER, Role.READONLY]),
-            "file_list": ToolPermission("file_list", [Role.ADMIN, Role.USER, Role.READONLY]),
+            "calculator": ToolPermission(
+                "calculator", [Role.ADMIN, Role.USER, Role.READONLY]
+            ),
+            "datetime": ToolPermission(
+                "datetime", [Role.ADMIN, Role.USER, Role.READONLY]
+            ),
+            "crypto_price": ToolPermission(
+                "crypto_price", [Role.ADMIN, Role.USER, Role.READONLY]
+            ),
+            "text_stats": ToolPermission(
+                "text_stats", [Role.ADMIN, Role.USER, Role.READONLY]
+            ),
+            "file_list": ToolPermission(
+                "file_list", [Role.ADMIN, Role.USER, Role.READONLY]
+            ),
             "file_crud": ToolPermission(
                 "file_crud",
                 [Role.ADMIN, Role.USER, Role.READONLY],
-                require_confirmation=True  # Demander confirmation pour modifier des fichiers
+                require_confirmation=True,
             ),
             "python_code": ToolPermission(
                 "python_code",

@@ -1,6 +1,6 @@
+from src.application.orchestrators.response_parser import ResponseParser
 from src.domain.entities.plan import Plan, Task
 from src.domain.protocols.llm_provider import LLMProvider
-from src.application.orchestrators.response_parser import ResponseParser
 from src.domain.protocols.memory import AgentMemory
 
 
@@ -26,8 +26,7 @@ class Planner:
 
             if skills:
                 skills_context = "\n".join(
-                    f"- Tâche: {getattr(s, 'content', str(s))}"
-                    for s in skills[:5]
+                    f"- Tâche: {getattr(s, 'content', str(s))}" for s in skills[:5]
                 )
 
         prompt = f"""
@@ -49,20 +48,23 @@ Retourne UNIQUEMENT ce JSON:
 
 RÈGLES:
 - Si l'objectif est simple (salut, question), crée UNE SEULE tâche
-- depends_on doit être une liste de strings (descriptions de tâches), JAMAIS des indices numériques
+- depends_on doit être une liste de strings (descriptions de tâches), JAMAIS des
+  indices numériques
 - status toujours "pending"
 """
 
         try:
-            raw = await self.llm.chat([
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": goal},
-            ])
-        except Exception as e:
+            raw = await self.llm.chat(
+                [
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": goal},
+                ]
+            )
+        except Exception:
             # Fallback si le LLM échoue
             return Plan(
                 goal=goal,
-                tasks=[Task(description=goal, depends_on=[], status="pending")]
+                tasks=[Task(description=goal, depends_on=[], status="pending")],
             )
 
         parsed = self.parser._extract_json(raw)
@@ -70,7 +72,7 @@ RÈGLES:
         if not isinstance(parsed, dict):
             return Plan(
                 goal=goal,
-                tasks=[Task(description=goal, depends_on=[], status="pending")]
+                tasks=[Task(description=goal, depends_on=[], status="pending")],
             )
 
         tasks: list[Task] = []
@@ -78,13 +80,14 @@ RÈGLES:
 
         # ✅ Si le plan est un dict numérique {"1": "...", "2": "..."}
         if not raw_tasks or not isinstance(raw_tasks, list):
-            numeric_keys = sorted(
-                [k for k in parsed.keys() if k.isdigit()],
-                key=int
-            )
+            numeric_keys = sorted([k for k in parsed.keys() if k.isdigit()], key=int)
             if numeric_keys:
                 raw_tasks = [
-                    {"description": str(parsed[k]), "depends_on": [], "status": "pending"}
+                    {
+                        "description": str(parsed[k]),
+                        "depends_on": [],
+                        "status": "pending",
+                    }
                     for k in numeric_keys
                 ]
 
@@ -97,12 +100,9 @@ RÈGLES:
                 continue
 
             depends = t.get("depends_on", [])
-            # ✅ Nettoyage : ne garder que les strings, ignorer les int/None
+            # Convertit aussi les dépendances numériques pour la validation.
             if isinstance(depends, list):
-                depends = [
-                    str(d) for d in depends
-                    if d is not None and not isinstance(d, (int, float))
-                ]
+                depends = [str(d) for d in depends if d is not None]
             else:
                 depends = []
 
@@ -124,6 +124,68 @@ RÈGLES:
                 )
             )
 
-        plan_goal = str(parsed.get("goal", goal)).strip() or goal
+        candidate = Plan(goal=goal, tasks=tasks)
+        return self.validate_plan(candidate) or Plan(
+            goal=goal,
+            tasks=[Task(description=goal, depends_on=[], status="pending")],
+        )
 
-        return Plan(goal=plan_goal, tasks=tasks)
+    @staticmethod
+    def validate_plan(plan: Plan) -> Plan | None:
+        """Refuse les dépendances inconnues, ambiguës ou cycliques."""
+        if not plan.tasks or len(plan.tasks) > 12:
+            return None
+
+        def normalize(value: str) -> str:
+            return " ".join(value.casefold().split())
+
+        by_description: dict[str, Task] = {}
+        by_id = {task.id: task for task in plan.tasks}
+        if len(by_id) != len(plan.tasks):
+            return None
+        for task in plan.tasks:
+            key = normalize(task.description)
+            if not key or key in by_description:
+                return None
+            by_description[key] = task
+
+        dependencies: dict[str, set[str]] = {}
+        for task in plan.tasks:
+            key = normalize(task.description)
+            resolved: set[str] = set()
+            for raw_dependency in task.depends_on:
+                dependency = str(raw_dependency).strip()
+                if dependency.isdigit():
+                    number = int(dependency)
+                    target = (
+                        plan.tasks[number - 1]
+                        if 1 <= number <= len(plan.tasks)
+                        else None
+                    )
+                else:
+                    target = by_id.get(dependency) or by_description.get(
+                        normalize(dependency)
+                    )
+                if target is None or target is task:
+                    return None
+                resolved_key = normalize(target.description)
+                resolved.add(resolved_key)
+            dependencies[key] = resolved
+            task.depends_on = [
+                by_description[item].description for item in sorted(resolved)
+            ]
+
+        # Un tri topologique léger détecte les cycles sans autre dépendance.
+        remaining = set(dependencies)
+        completed: set[str] = set()
+        while remaining:
+            ready = {
+                task_key
+                for task_key in remaining
+                if dependencies[task_key] <= completed
+            }
+            if not ready:
+                return None
+            completed.update(ready)
+            remaining.difference_update(ready)
+        return plan

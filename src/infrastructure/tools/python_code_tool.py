@@ -4,8 +4,7 @@ import ctypes
 import sys
 from typing import Any
 
-
-_WORKER = r'''
+_WORKER = r"""
 import contextlib
 import io
 import sys
@@ -56,7 +55,7 @@ try:
         print("Succes (aucune sortie console).")
 except Exception as exc:
     print(f"Code sortie: 1\n{type(exc).__name__}: {exc}")
-'''
+"""
 
 
 class PythonCodeTool:
@@ -75,15 +74,57 @@ class PythonCodeTool:
     max_integer = 100_000
 
     _allowed_nodes = (
-        ast.Module, ast.Expr, ast.Assign, ast.AugAssign, ast.Name, ast.Constant,
-        ast.List, ast.Tuple, ast.Dict, ast.Set, ast.BinOp, ast.UnaryOp,
-        ast.BoolOp, ast.Compare, ast.IfExp, ast.Call, ast.keyword,
-        ast.Subscript, ast.Slice, ast.For, ast.While, ast.If, ast.Break,
-        ast.Continue, ast.Pass, ast.Raise, ast.Load, ast.Store,
-        ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow,
-        ast.USub, ast.UAdd, ast.Not, ast.Invert, ast.And, ast.Or,
-        ast.Eq, ast.NotEq, ast.Lt, ast.LtE, ast.Gt, ast.GtE, ast.In,
-        ast.NotIn, ast.Is, ast.IsNot,
+        ast.Module,
+        ast.Expr,
+        ast.Assign,
+        ast.AugAssign,
+        ast.Name,
+        ast.Constant,
+        ast.List,
+        ast.Tuple,
+        ast.Dict,
+        ast.Set,
+        ast.BinOp,
+        ast.UnaryOp,
+        ast.BoolOp,
+        ast.Compare,
+        ast.IfExp,
+        ast.Call,
+        ast.keyword,
+        ast.Subscript,
+        ast.Slice,
+        ast.For,
+        ast.While,
+        ast.If,
+        ast.Break,
+        ast.Continue,
+        ast.Pass,
+        ast.Raise,
+        ast.Load,
+        ast.Store,
+        ast.Add,
+        ast.Sub,
+        ast.Mult,
+        ast.Div,
+        ast.FloorDiv,
+        ast.Mod,
+        ast.Pow,
+        ast.USub,
+        ast.UAdd,
+        ast.Not,
+        ast.Invert,
+        ast.And,
+        ast.Or,
+        ast.Eq,
+        ast.NotEq,
+        ast.Lt,
+        ast.LtE,
+        ast.Gt,
+        ast.GtE,
+        ast.In,
+        ast.NotIn,
+        ast.Is,
+        ast.IsNot,
     )
 
     def infer_args(self, user_input: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -112,10 +153,17 @@ class PythonCodeTool:
             ]
 
         class IoCounters(ctypes.Structure):
-            _fields_ = [(name, ctypes.c_ulonglong) for name in (
-                "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
-                "ReadTransferCount", "WriteTransferCount", "OtherTransferCount",
-            )]
+            _fields_ = [
+                (name, ctypes.c_ulonglong)
+                for name in (
+                    "ReadOperationCount",
+                    "WriteOperationCount",
+                    "OtherOperationCount",
+                    "ReadTransferCount",
+                    "WriteTransferCount",
+                    "OtherTransferCount",
+                )
+            ]
 
         class ExtendedLimitInformation(ctypes.Structure):
             _fields_ = [
@@ -133,7 +181,10 @@ class PythonCodeTool:
         kernel32.CreateJobObjectW.argtypes = (ctypes.c_void_p, wintypes.LPCWSTR)
         kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
         kernel32.SetInformationJobObject.argtypes = (
-            wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
         )
         kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
         kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
@@ -180,7 +231,9 @@ class PythonCodeTool:
             if isinstance(node, ast.Attribute):
                 return "Erreur de sécurité : accès aux attributs interdit."
             if not isinstance(node, self._allowed_nodes):
-                return f"Erreur de sécurité : syntaxe interdite '{type(node).__name__}'."
+                return (
+                    f"Erreur de sécurité : syntaxe interdite '{type(node).__name__}'."
+                )
             if isinstance(node, ast.Name) and node.id.startswith("__"):
                 return "Erreur de sécurité : noms spéciaux interdits."
             if isinstance(node, ast.Constant) and isinstance(node.value, int):
@@ -205,12 +258,15 @@ class PythonCodeTool:
                 except OSError as exc:
                     process.kill()
                     await process.wait()
-                    return f"Erreur sandbox Python : impossible de limiter le processus ({exc})."
+                    return (
+                        "Erreur sandbox Python : impossible de limiter le "
+                        f"processus ({exc})."
+                    )
             stdout, stderr = await asyncio.wait_for(
                 process.communicate(code.encode("utf-8")),
                 timeout=self.timeout_seconds,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             process.kill()
             await process.wait()
             return "Code sortie: 1\nTimeoutError: limite de 5 secondes dépassée."

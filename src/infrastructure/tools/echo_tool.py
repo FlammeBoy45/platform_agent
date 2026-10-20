@@ -21,7 +21,7 @@ class EchoTool:
     )
 
     def infer_args(self, user_input: str, args: dict[str, Any]) -> dict[str, Any]:
-        """Extrait le texte à répéter depuis l'entrée utilisateur si absent des arguments."""
+        """Extrait le texte à répéter si absent des arguments."""
         if args.get("text"):
             return args
 
@@ -35,7 +35,7 @@ class EchoTool:
         prefixes = ("echo", "repete exactement", "répète exactement")
         for prefix in prefixes:
             if cleaned.lower().startswith(prefix):
-                cleaned = cleaned[len(prefix):].strip()
+                cleaned = cleaned[len(prefix) :].strip()
                 break
 
         return {**args, "text": cleaned}

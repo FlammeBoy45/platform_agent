@@ -9,7 +9,7 @@ class Reflector:
     ou s'il faut réessayer avec une approche différente.
     """
 
-    def __init__(self, llm: LLMProvider):
+    def __init__(self, llm: LLMProvider) -> None:
         self.llm = llm
 
     async def evaluate(
@@ -18,7 +18,7 @@ class Reflector:
         action_taken: str,
         result: str,
         success: bool,
-    ) -> dict:
+    ) -> dict[str, str]:
         """
         Évalue le résultat et retourne :
         {
@@ -51,16 +51,25 @@ Choisis UNIQUEMENT parmi ces statuts :
 - "give_up" : impossible, l'utilisateur doit intervenir
 
 Retourne UNIQUEMENT ce JSON :
-{{"status": "ok|retry|replan|give_up", "analysis": "ton analyse courte", "suggestion": "quoi faire si retry/replan"}}
+{{"status": "ok|retry|replan|give_up", "analysis": "ton analyse courte",
+  "suggestion": "quoi faire si retry/replan"}}
 """
 
         try:
-            raw = await self.llm.chat([
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": f"Goal: {goal}\nAction: {action_taken}\nResult: {result}"},
-            ])
+            raw = await self.llm.chat(
+                [
+                    {"role": "system", "content": prompt},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Goal: {goal}\nAction: {action_taken}\nResult: {result}"
+                        ),
+                    },
+                ]
+            )
 
             import json
+
             # Extraire le JSON
             text = raw.strip()
             if text.startswith("```"):
@@ -79,5 +88,7 @@ Retourne UNIQUEMENT ce JSON :
             return {
                 "status": "ok" if success else "retry",
                 "analysis": "Évaluation automatique",
-                "suggestion": "Réessayer avec des paramètres différents" if not success else "",
+                "suggestion": "Réessayer avec des paramètres différents"
+                if not success
+                else "",
             }

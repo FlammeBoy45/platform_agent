@@ -1,3 +1,4 @@
+from importlib import import_module
 from pathlib import Path
 
 from src.config.settings import Settings, get_settings
@@ -28,7 +29,6 @@ def register_default_tools(
         project_root = Path(__file__).resolve().parents[3]
         workspace = project_root / workspace
     workspace = workspace.resolve()
-    workspace.mkdir(parents=True, exist_ok=True)
 
     registry.register(EchoTool())
     registry.register(CalculatorTool())
@@ -45,3 +45,15 @@ def register_default_tools(
     )
     registry.register(TextStatsTool())
     registry.register(WebFetchTool())
+
+    for module_name in filter(
+        None, (name.strip() for name in settings.AGENT_PLUGIN_MODULES.split(","))
+    ):
+        plugin = import_module(module_name)
+        register = getattr(plugin, "register_tools", None)
+        if not callable(register):
+            raise ValueError(
+                f"Le plugin {module_name!r} doit exposer "
+                "register_tools(registry, settings, memory)."
+            )
+        register(registry, settings=settings, memory=memory)

@@ -8,6 +8,7 @@ from typing import Any
 @dataclass
 class ActionResult:
     """Résultat d'une action avec métriques."""
+
     tool_name: str
     success: bool
     duration_ms: float
@@ -18,6 +19,7 @@ class ActionResult:
 @dataclass
 class SessionMetrics:
     """Métriques d'une session complète."""
+
     session_id: str
     start_time: float
     status: str = "running"
@@ -97,13 +99,15 @@ class ActionEvaluator:
             metrics.failed_actions += 1
         metrics.total_duration_ms += duration_ms
 
-        metrics.actions.append(ActionResult(
-            tool_name=tool_name,
-            success=success,
-            duration_ms=duration_ms,
-            output_preview=output[:100],
-            error=error,
-        ))
+        metrics.actions.append(
+            ActionResult(
+                tool_name=tool_name,
+                success=success,
+                duration_ms=duration_ms,
+                output_preview=output[:100],
+                error=error,
+            )
+        )
 
     def record_retry(self, metrics: SessionMetrics) -> None:
         metrics.retries += 1
@@ -118,7 +122,7 @@ class ActionEvaluator:
         if not any(item.session_id == metrics.session_id for item in self._history):
             self._history.append(metrics)
             if len(self._history) > self._max_history:
-                self._history = self._history[-self._max_history:]
+                self._history = self._history[-self._max_history :]
         return metrics.summary()
 
     def get_global_stats(self) -> dict[str, Any]:

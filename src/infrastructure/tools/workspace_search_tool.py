@@ -15,12 +15,22 @@ class WorkspaceSearchTool:
     optional_args = ("path",)
     return_direct = True
     trigger_words: tuple[str, ...] = (
-        "dans les fichiers", "dans le code", "dans le projet", "où est défini",
-        "ou est defini", "recherche dans", "cherche dans",
+        "dans les fichiers",
+        "dans le code",
+        "dans le projet",
+        "où est défini",
+        "ou est defini",
+        "recherche dans",
+        "cherche dans",
     )
     _blocked_parts = {
-        ".git", ".venv", "__pycache__", ".mypy_cache", ".pytest_cache",
-        ".ruff_cache", "node_modules",
+        ".git",
+        ".venv",
+        "__pycache__",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        "node_modules",
     }
     _blocked_names = {".env", "memory.json"}
     _max_files = 2_000

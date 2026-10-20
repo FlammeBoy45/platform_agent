@@ -56,7 +56,7 @@ class CalculatorTool:
         )
         for prefix in prefixes:
             if expression.startswith(prefix):
-                expression = expression[len(prefix):]
+                expression = expression[len(prefix) :]
                 break
 
         expression = expression.replace("?", "").replace("=", "")
@@ -72,8 +72,8 @@ class CalculatorTool:
 
         # "15% de 340" → "340 * 0.15"
         percent_match = re.search(
-            r'(\d+(?:\.\d+)?)\s*%\s*(?:de|d\'|du|sur)\s*(\d+(?:\.\d+)?)',
-            expression.lower()
+            r"(\d+(?:\.\d+)?)\s*%\s*(?:de|d\'|du|sur)\s*(\d+(?:\.\d+)?)",
+            expression.lower(),
         )
         if percent_match:
             value = float(percent_match.group(1))
@@ -82,8 +82,9 @@ class CalculatorTool:
 
         # "15 pourcent de 340" → "340 * 0.15"
         pourcent_match = re.search(
-            r'(\d+(?:\.\d+)?)\s*(?:pourcent|pour cent)\s*(?:de|d\'|du|sur)\s*(\d+(?:\.\d+)?)',
-            expression.lower()
+            r"(\d+(?:\.\d+)?)\s*(?:pourcent|pour cent)\s*"
+            r"(?:de|d\'|du|sur)\s*(\d+(?:\.\d+)?)",
+            expression.lower(),
         )
         if pourcent_match:
             value = float(pourcent_match.group(1))
@@ -92,13 +93,13 @@ class CalculatorTool:
 
         # "moitié de 100" → "100 * 0.5"
         if "moitié" in expression.lower() or "moitie" in expression.lower():
-            total_match = re.search(r'(\d+(?:\.\d+)?)', expression)
+            total_match = re.search(r"(\d+(?:\.\d+)?)", expression)
             if total_match:
                 return f"{total_match.group(1)} * 0.5"
 
         # "racine carrée de 16" → "16 ** 0.5"
         if "racine" in expression.lower():
-            num_match = re.search(r'(\d+(?:\.\d+)?)', expression)
+            num_match = re.search(r"(\d+(?:\.\d+)?)", expression)
             if num_match:
                 return f"{num_match.group(1)} ** 0.5"
 

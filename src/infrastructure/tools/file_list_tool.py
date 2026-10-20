@@ -5,8 +5,7 @@ from typing import Any
 class FileListTool:
     name = "file_list"
     description = (
-        "Liste les fichiers et dossiers dans le workspace a partir d'un chemin "
-        "relatif."
+        "Liste les fichiers et dossiers dans le workspace a partir d'un chemin relatif."
     )
     args_schema = {
         "path": "Chemin relatif du dossier a lister. Defaut: .",

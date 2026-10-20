@@ -1,8 +1,8 @@
-from src.domain.entities.plan import Plan
+from src.domain.entities.plan import Plan, Task
 
 
 class Scheduler:
-    def get_next_task(self, plan: Plan):
+    def get_next_task(self, plan: Plan) -> Task | None:
         completed = {
             identifier
             for task in plan.tasks

@@ -1,6 +1,7 @@
 import asyncio
 from typing import Protocol
 
+from src import __version__
 from src.application.orchestrators.agent_runtime import AgentRuntime
 from src.config.container import Container
 from src.config.logging import setup_logging
@@ -8,17 +9,14 @@ from src.infrastructure.tools.default_tools import register_default_tools
 
 
 class ChatAgent(Protocol):
-    async def run(self, user_input: str) -> str:
-        ...
+    async def run(self, user_input: str) -> str: ...
 
 
 async def _confirm_tool_action(tool_name: str, args: dict[str, object]) -> bool:
     action = str(args.get("action", "exécuter"))
     path = str(args.get("path", "")).strip()
     target = f" sur « {path} »" if path else ""
-    prompt = (
-        f"Confirmer l'action {action}{target} avec l'outil {tool_name} ? [o/N] "
-    )
+    prompt = f"Confirmer l'action {action}{target} avec l'outil {tool_name} ? [o/N] "
     try:
         answer = await asyncio.to_thread(input, prompt)
     except EOFError:
@@ -36,6 +34,15 @@ async def _conversation_loop(agent: ChatAgent) -> None:
 
         if user_input.lower() in ["exit", "quit"]:
             break
+        if user_input.strip().casefold() == "/version":
+            print(f"Agent Platform v{__version__}\n")
+            continue
+        if user_input.strip().lower() == "/new":
+            reset = getattr(agent, "reset", None)
+            if callable(reset):
+                reset()
+            print("Nouvelle session.\n")
+            continue
 
         try:
             response = await agent.run(user_input)
@@ -64,7 +71,7 @@ async def main() -> None:
     )
 
     print("Agent ready.")
-    print("Type 'exit' to quit.\n")
+    print("Type '/version', '/new' or 'exit'.\n")
 
     await _conversation_loop(agent)
 

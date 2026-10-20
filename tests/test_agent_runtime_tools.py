@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 from typing import Any
 
@@ -32,9 +33,35 @@ class FakeLLM:
 
     async def chat(self, messages: list[dict[str, str]]) -> str:
         self.messages.append(messages)
+        if (
+            messages
+            and messages[0]["content"].lstrip().startswith("Tu es un planificateur.")
+            and not (self.responses and self._is_plan_response(self.responses[0]))
+        ):
+            goal = (
+                messages[0]["content"]
+                .split("OBJECTIF:", 1)[-1]
+                .split("\n", 1)[0]
+                .strip()
+            )
+            return (
+                '{"goal":'
+                + json.dumps(goal, ensure_ascii=False)
+                + ',"tasks":[{"description":'
+                + json.dumps(goal, ensure_ascii=False)
+                + ',"depends_on":[],"status":"pending"}]}'
+            )
         if not self.responses:
             return '{"tool":"final","args":{"content":"fallback"}}'
         return self.responses.pop(0)
+
+    @staticmethod
+    def _is_plan_response(response: str) -> bool:
+        try:
+            parsed = json.loads(response)
+        except json.JSONDecodeError:
+            return False
+        return isinstance(parsed, dict) and "goal" in parsed and "tasks" in parsed
 
     async def stream(self, messages: list[dict[str, str]]) -> Any:
         return None
@@ -308,10 +335,12 @@ async def test_memory_can_be_disabled_without_initializing_persistent_store(
 
     monkeypatch.setattr(agent_runtime_module, "MemoryV2", fail_if_initialized)
     runtime = AgentRuntime(
-        FakeLLM([
-            '{"goal":"salut","tasks":[{"description":"salut","status":"pending"}]}',
-            '{"tool":"final","args":{"content":"Bonjour !"}}',
-        ]),
+        FakeLLM(
+            [
+                '{"goal":"salut","tasks":[{"description":"salut","status":"pending"}]}',
+                '{"tool":"final","args":{"content":"Bonjour !"}}',
+            ]
+        ),
         NullLogger(),
         ToolRegistry(),
         enable_memory=False,
@@ -350,13 +379,15 @@ async def test_informal_module_request_creates_empty_python_file(
     registry = ToolRegistry()
     registry.register(FileCrudTool(root=tmp_path))
     runtime = AgentRuntime(
-        FakeLLM([
-            (
-                '{"goal":"module auth",'
-                '"tasks":[{"description":"module auth","status":"pending"}]}'
-            ),
-            '{"tool":"final","args":{"content":"Je vais preparer le module."}}',
-        ]),
+        FakeLLM(
+            [
+                (
+                    '{"goal":"module auth",'
+                    '"tasks":[{"description":"module auth","status":"pending"}]}'
+                ),
+                '{"tool":"final","args":{"content":"Je vais preparer le module."}}',
+            ]
+        ),
         NullLogger(),
         registry,
         enable_memory=True,
@@ -416,16 +447,18 @@ async def test_denied_confirmation_stops_runtime_before_file_write(
     registry = ToolRegistry()
     registry.register(FileCrudTool(root=tmp_path))
     runtime = AgentRuntime(
-        FakeLLM([
-            (
-                '{"goal":"créer note.txt","tasks":'
-                '[{"description":"créer note.txt","status":"pending"}]}'
-            ),
-            (
-                '{"tool":"file_crud","args":'
-                '{"action":"create","path":"note.txt","content":"contenu"}}'
-            ),
-        ]),
+        FakeLLM(
+            [
+                (
+                    '{"goal":"créer note.txt","tasks":'
+                    '[{"description":"créer note.txt","status":"pending"}]}'
+                ),
+                (
+                    '{"tool":"file_crud","args":'
+                    '{"action":"create","path":"note.txt","content":"contenu"}}'
+                ),
+            ]
+        ),
         NullLogger(),
         registry,
         enable_memory=False,
@@ -456,32 +489,37 @@ async def test_file_read_does_not_prompt_for_confirmation(tmp_path: Path) -> Non
         confirmation_handler=lambda _tool_name, _args: _deny_tool_action(),
     )
 
-    assert await runtime._run_tool(
-        tool,
-        {"action": "read", "path": "note.txt", "content": ""},
-        "lis note.txt",
-        "trace",
-    ) == "contenu"
+    assert (
+        await runtime._run_tool(
+            tool,
+            {"action": "read", "path": "note.txt", "content": ""},
+            "lis note.txt",
+            "trace",
+        )
+        == "contenu"
+    )
 
 
 @pytest.mark.asyncio
 async def test_unfinished_plan_resumes_on_explicit_follow_up() -> None:
-    llm = FakeLLM([
-        (
-            '{"goal":"Répéter puis saluer",'
-            '"tasks":['
-            '{"description":"Répéter le texte","depends_on":[],"status":"pending"},'
-            '{"description":"Saluer","depends_on":[],"status":"pending"}'
-            ']}'
-        ),
-        (
-            '{"tool":"echo","args":{"text":"première étape"},'
-            '"plan":{"goal":"Répéter puis saluer","tasks":['
-            '{"description":"Répéter le texte","status":"pending"},'
-            '{"description":"Saluer","status":"pending"}]}}'
-        ),
-        '{"tool":"final","args":{"content":"Deuxième étape terminée."}}',
-    ])
+    llm = FakeLLM(
+        [
+            (
+                '{"goal":"Répéter puis saluer",'
+                '"tasks":['
+                '{"description":"Répéter le texte","depends_on":[],"status":"pending"},'
+                '{"description":"Saluer","depends_on":[],"status":"pending"}'
+                "]}"
+            ),
+            (
+                '{"tool":"echo","args":{"text":"première étape"},'
+                '"plan":{"goal":"Répéter puis saluer","tasks":['
+                '{"description":"Répéter le texte","status":"pending"},'
+                '{"description":"Saluer","status":"pending"}]}}'
+            ),
+            '{"tool":"final","args":{"content":"Deuxième étape terminée."}}',
+        ]
+    )
     registry = ToolRegistry()
     registry.register(EchoTool())
     runtime = AgentRuntime(
@@ -512,17 +550,19 @@ async def test_unfinished_plan_resumes_on_explicit_follow_up() -> None:
 
 @pytest.mark.asyncio
 async def test_direct_tool_does_not_skip_remaining_plan_tasks() -> None:
-    llm = FakeLLM([
-        (
-            '{"goal":"Répéter deux textes",'
-            '"tasks":['
-            '{"description":"Répéter le premier texte","status":"pending"},'
-            '{"description":"Répéter le second texte","status":"pending"}'
-            ']}'
-        ),
-        '{"tool":"echo","args":{"text":"premier"}}',
-        '{"tool":"echo","args":{"text":"second"}}',
-    ])
+    llm = FakeLLM(
+        [
+            (
+                '{"goal":"Répéter deux textes",'
+                '"tasks":['
+                '{"description":"Répéter le premier texte","status":"pending"},'
+                '{"description":"Répéter le second texte","status":"pending"}'
+                "]}"
+            ),
+            '{"tool":"echo","args":{"text":"premier"}}',
+            '{"tool":"echo","args":{"text":"second"}}',
+        ]
+    )
     registry = ToolRegistry()
     registry.register(EchoTool())
     runtime = AgentRuntime(
@@ -544,12 +584,14 @@ async def test_direct_tool_does_not_skip_remaining_plan_tasks() -> None:
 
 @pytest.mark.asyncio
 async def test_unrelated_request_starts_a_new_plan() -> None:
-    llm = FakeLLM([
-        '{"goal":"premier objectif","tasks":[{"description":"étape 1"}]}',
-        '{"tool":"final","args":{"content":"Premier objectif terminé."}}',
-        '{"goal":"second objectif","tasks":[{"description":"étape 2"}]}',
-        '{"tool":"final","args":{"content":"Second objectif terminé."}}',
-    ])
+    llm = FakeLLM(
+        [
+            '{"goal":"premier objectif","tasks":[{"description":"étape 1"}]}',
+            '{"tool":"final","args":{"content":"Premier objectif terminé."}}',
+            '{"goal":"second objectif","tasks":[{"description":"étape 2"}]}',
+            '{"tool":"final","args":{"content":"Second objectif terminé."}}',
+        ]
+    )
     runtime = AgentRuntime(
         llm,
         NullLogger(),
@@ -607,9 +649,11 @@ async def test_max_steps_exit_finalizes_as_incomplete() -> None:
         lambda data: capture_event(events, "agent.interrupted", data),
     )
     runtime = AgentRuntime(
-        FakeLLM([
-            '{"goal":"objectif","tasks":[{"description":"étape"}]}',
-        ]),
+        FakeLLM(
+            [
+                '{"goal":"objectif","tasks":[{"description":"étape"}]}',
+            ]
+        ),
         NullLogger(),
         ToolRegistry(),
         event_bus=event_bus,

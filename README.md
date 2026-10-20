@@ -65,10 +65,12 @@ le modifier). Ce réglage n'est pas une authentification multi-utilisateur. Les 
 modifications et suppressions de fichiers demandent une confirmation dans la console;
 les lectures ne la demandent pas. Les appels du runtime sans gestionnaire de confirmation
 sont refusés par défaut pour ces actions.
-Un plan qui reste incomplet après une limite d'étapes ou une interruption est conservé
-pendant la durée de vie du processus; écris « continue » ou « reprends » pour le relancer.
-Une nouvelle demande démarre un nouveau plan. Les plans ne sont pas encore sauvegardés
-après l'arrêt du processus.
+La commande `/version` affiche la version; `/new` démarre une session neuve.
+La dernière conversation est rechargée au redémarrage depuis `data/sessions.jsonl`.
+Les plans incomplets y sont sauvegardés; écris « continue » ou « reprends » pour relancer
+le plan après redémarrage. `/new` démarre une session indépendante.
+Des outils additionnels peuvent être fournis par des modules Python listés dans
+`AGENT_PLUGIN_MODULES`; chaque module expose `register_tools(registry, settings, memory)`.
 Chaque requête finalise ses métriques et émet `agent.completed`, `agent.failed` ou
 `agent.interrupted` selon son issue; les réponses de raccourci sont aussi ajoutées
 à l'historique de conversation.
@@ -80,4 +82,15 @@ un fichier existant.
 
 ```bash
 uv run pytest
+```
+
+## Contrôles qualité
+
+Les mêmes contrôles sont exécutés automatiquement sur chaque push et pull request :
+
+```bash
+uv run ruff check src tests
+uv run ruff format --check src tests
+uv run mypy src
+uv run pytest -q
 ```

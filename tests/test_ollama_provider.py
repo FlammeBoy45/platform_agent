@@ -91,10 +91,12 @@ async def test_ollama_provider_uses_openai_compatible_local_endpoint(
         "base_url": "http://localhost:11434/v1",
         "api_key": "ollama",
     }
-    assert clients[0].completions.calls == [{
-        "model": "llama3.2",
-        "messages": [{"role": "user", "content": "Bonjour"}],
-    }]
+    assert clients[0].completions.calls == [
+        {
+            "model": "llama3.2",
+            "messages": [{"role": "user", "content": "Bonjour"}],
+        }
+    ]
 
     streamed = await provider.stream([{"role": "user", "content": "Bonjour"}])
     assert streamed == "stream"

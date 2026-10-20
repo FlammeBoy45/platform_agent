@@ -16,7 +16,13 @@ class MemoryTool:
     optional_args = ("query",)
     return_direct = True
     trigger_words: tuple[str, ...] = (
-        "souviens", "souvenir", "mémoire", "memoire", "memory", "retiens", "oublie",
+        "souviens",
+        "souvenir",
+        "mémoire",
+        "memoire",
+        "memory",
+        "retiens",
+        "oublie",
     )
 
     def __init__(self, memory: LongTermMemory | None) -> None:
@@ -53,6 +59,4 @@ class MemoryTool:
                 "L'utilisateur doit demander directement l'enregistrement ou l'oubli."
             )
 
-        return (
-            "Action mémoire invalide. Actions disponibles : search, list."
-        )
+        return "Action mémoire invalide. Actions disponibles : search, list."

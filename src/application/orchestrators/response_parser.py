@@ -31,8 +31,9 @@ class ResponseParser:
             self.logger.info(f"[AGENT-REASONING] {thought}")
 
         try:
+            parsed = self._normalize_response_shape(parsed)
             parsed = self._normalize_args(parsed)
-            parsed = self._force_tool_field(parsed)          # 🔥 FIX IMPORTANT
+            parsed = self._force_tool_field(parsed)  # 🔥 FIX IMPORTANT
             parsed = self._extract_plan_from_args(parsed)
             parsed = self._sanitize_plan(parsed)
 
@@ -46,6 +47,27 @@ class ResponseParser:
             args={"content": raw.strip()},
             plan=None,
         )
+
+    @staticmethod
+    def _normalize_response_shape(parsed: dict[str, Any]) -> dict[str, Any]:
+        """Accept common final-response shapes returned by compatible models."""
+        if isinstance(parsed.get("tool"), str):
+            return parsed
+
+        response_type = parsed.get("response")
+        if response_type == "final" and isinstance(parsed.get("text"), str):
+            parsed["tool"] = "final"
+            parsed["args"] = {"content": parsed["text"]}
+            return parsed
+
+        for field in ("message", "content"):
+            value = parsed.get(field)
+            if isinstance(value, str):
+                parsed["tool"] = "final"
+                parsed["args"] = {"content": value}
+                return parsed
+
+        return parsed
 
     # ----------------------------
     # FIX 1: args normalization
@@ -95,10 +117,7 @@ class ResponseParser:
 
         # ✅ CAS 0 : plan est une string → le convertir en dict
         if isinstance(plan, str):
-            plan = {
-                "goal": plan,
-                "tasks": [{"description": plan, "status": "pending"}]
-            }
+            plan = {"goal": plan, "tasks": [{"description": plan, "status": "pending"}]}
             parsed["plan"] = plan
 
         if not isinstance(plan, dict):
@@ -123,14 +142,10 @@ class ResponseParser:
                     t["status"] = "failed"
             return parsed
 
-        numeric_keys = sorted(
-            [k for k in plan.keys() if k.isdigit()],
-            key=int
-        )
+        numeric_keys = sorted([k for k in plan.keys() if k.isdigit()], key=int)
         if numeric_keys:
             plan["tasks"] = [
-                {"description": str(plan[k]), "status": "pending"}
-                for k in numeric_keys
+                {"description": str(plan[k]), "status": "pending"} for k in numeric_keys
             ]
             if "goal" not in plan:
                 plan["goal"] = plan["tasks"][0]["description"]
@@ -139,13 +154,12 @@ class ResponseParser:
             return parsed
 
         if not tasks:
-            plan["tasks"] = [
-                {"description": str(plan), "status": "pending"}
-            ]
+            plan["tasks"] = [{"description": str(plan), "status": "pending"}]
             if "goal" not in plan:
                 plan["goal"] = "Tâche en cours"
 
-        return parsed    # ----------------------------
+        return parsed  # ----------------------------
+
     # JSON extraction (robust)
     # ----------------------------
     def _extract_json(self, raw: str) -> Any:

@@ -1,5 +1,6 @@
-from pydantic import BaseModel, Field
 from uuid import uuid4
+
+from pydantic import BaseModel, Field
 
 
 class Task(BaseModel):
@@ -7,15 +8,9 @@ class Task(BaseModel):
 
     id: str = Field(default_factory=lambda: str(uuid4()))
 
-    description: str = Field(
-        ...,
-        description="Description de la tâche"
-    )
+    description: str = Field(..., description="Description de la tâche")
 
-    status: str = Field(
-        "pending",
-        pattern="^(pending|in_progress|completed|failed)$"
-    )
+    status: str = Field("pending", pattern="^(pending|in_progress|completed|failed)$")
 
     result: str | None = None
 
@@ -29,10 +24,7 @@ class Task(BaseModel):
 class Plan(BaseModel):
     """Un ensemble de tâches pour atteindre un objectif persistant."""
 
-    goal: str = Field(
-        ...,
-        description="Objectif final de l'agent"
-    )
+    goal: str = Field(..., description="Objectif final de l'agent")
 
     tasks: list[Task] = Field(default_factory=list)
 

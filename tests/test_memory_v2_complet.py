@@ -5,23 +5,21 @@ Tests complets de la mémoire v2.
 Exécute avec : pytest tests/test_memory_v2_complet.py -v
 """
 
-import pytest
 import time
-from datetime import datetime
-from unittest.mock import MagicMock
+from datetime import UTC, datetime
 
-from src.application.memory_v2.memory_v2 import MemoryV2
 from src.application.memory_v2.episodic_store import EpisodicMemory
-from src.application.memory_v2.semantic_store import SemanticMemory
+from src.application.memory_v2.memory_v2 import MemoryV2
+from src.application.memory_v2.models import MemoryItem
 from src.application.memory_v2.procedural_store import ProceduralMemory
 from src.application.memory_v2.retriever import MemoryRetriever
+from src.application.memory_v2.semantic_store import SemanticMemory
 from src.application.memory_v2.working_memory import WorkingMemory
-from src.application.memory_v2.models import MemoryItem
-
 
 # ============================================================
 # ÉPISODIQUE
 # ============================================================
+
 
 class TestEpisodicMemory:
     def test_add_and_recent(self):
@@ -46,6 +44,7 @@ class TestEpisodicMemory:
 # ============================================================
 # SÉMANTIQUE
 # ============================================================
+
 
 class TestSemanticMemory:
     def test_add_and_search(self):
@@ -87,6 +86,7 @@ class TestSemanticMemory:
 # PROCÉDURALE
 # ============================================================
 
+
 class TestProceduralMemory:
     def test_add_and_search(self):
         mem = ProceduralMemory()
@@ -119,12 +119,16 @@ class TestProceduralMemory:
 # RETRIEVER
 # ============================================================
 
+
 class TestMemoryRetriever:
     def test_exact_match_score(self):
         retriever = MemoryRetriever()
         item = MemoryItem(
-            id="1", content="Python est un langage",
-            metadata={}, timestamp=datetime.utcnow(), importance=0.5
+            id="1",
+            content="Python est un langage",
+            metadata={},
+            timestamp=datetime.now(UTC),
+            importance=0.5,
         )
         score = retriever.score(item, "python langage")
         assert score > 0.3
@@ -132,8 +136,11 @@ class TestMemoryRetriever:
     def test_no_match_score(self):
         retriever = MemoryRetriever()
         item = MemoryItem(
-            id="1", content="Python est un langage",
-            metadata={}, timestamp=datetime.utcnow(), importance=0.5
+            id="1",
+            content="Python est un langage",
+            metadata={},
+            timestamp=datetime.now(UTC),
+            importance=0.5,
         )
         score = retriever.score(item, "voiture volante")
         assert score < 0.40
@@ -141,12 +148,18 @@ class TestMemoryRetriever:
     def test_chroma_bonus(self):
         retriever = MemoryRetriever()
         item_chroma = MemoryItem(
-            id="1", content="test",
-            metadata={"source": "chromadb"}, timestamp=datetime.utcnow(), importance=0.5
+            id="1",
+            content="test",
+            metadata={"source": "chromadb"},
+            timestamp=datetime.now(UTC),
+            importance=0.5,
         )
         item_normal = MemoryItem(
-            id="2", content="test",
-            metadata={}, timestamp=datetime.utcnow(), importance=0.5
+            id="2",
+            content="test",
+            metadata={},
+            timestamp=datetime.now(UTC),
+            importance=0.5,
         )
         score_chroma = retriever.score(item_chroma, "test")
         score_normal = retriever.score(item_normal, "test")
@@ -155,7 +168,13 @@ class TestMemoryRetriever:
     def test_retrieve_respects_top_k(self):
         retriever = MemoryRetriever()
         items = [
-            MemoryItem(id=str(i), content=f"item{i}", metadata={}, timestamp=datetime.utcnow(), importance=0.5)
+            MemoryItem(
+                id=str(i),
+                content=f"item{i}",
+                metadata={},
+                timestamp=datetime.now(UTC),
+                importance=0.5,
+            )
             for i in range(10)
         ]
         results = retriever.retrieve(items, "item", top_k=3)
@@ -164,13 +183,31 @@ class TestMemoryRetriever:
     def test_diversity_avoids_duplicates(self):
         retriever = MemoryRetriever()
         items = [
-            MemoryItem(id="1", content="Le chat est noir", metadata={}, timestamp=datetime.utcnow(), importance=0.5),
-            MemoryItem(id="2", content="Le chat est noir aussi", metadata={}, timestamp=datetime.utcnow(), importance=0.5),
-            MemoryItem(id="3", content="La voiture est rouge", metadata={}, timestamp=datetime.utcnow(), importance=0.5),
+            MemoryItem(
+                id="1",
+                content="Le chat est noir",
+                metadata={},
+                timestamp=datetime.now(UTC),
+                importance=0.5,
+            ),
+            MemoryItem(
+                id="2",
+                content="Le chat est noir aussi",
+                metadata={},
+                timestamp=datetime.now(UTC),
+                importance=0.5,
+            ),
+            MemoryItem(
+                id="3",
+                content="La voiture est rouge",
+                metadata={},
+                timestamp=datetime.now(UTC),
+                importance=0.5,
+            ),
         ]
         results = retriever.retrieve_with_diversity(items, "chat noir", top_k=2)
         assert len(results) == 2
-        # Les deux items "chat noir" ne devraient pas être tous les deux présents si trop similaires
+        # Évite deux résultats trop similaires pour la requête "chat noir".
         contents = [r.content for r in results]
         assert len(contents) == len(set(contents))  # Pas de doublons exacts
 
@@ -178,6 +215,7 @@ class TestMemoryRetriever:
 # ============================================================
 # WORKING MEMORY
 # ============================================================
+
 
 class TestWorkingMemory:
     def test_put_and_get(self):
@@ -224,6 +262,7 @@ class TestWorkingMemory:
 # MEMORY V2 - INTÉGRATION
 # ============================================================
 
+
 class TestMemoryV2Integration:
     def test_store_and_retrieve_episode(self):
         mem = MemoryV2()
@@ -243,7 +282,9 @@ class TestMemoryV2Integration:
 
     def test_store_and_retrieve_skill(self):
         mem = MemoryV2()
-        mem.store_skill("convertir_devise", ["récupérer taux", "multiplier"], success=True)
+        mem.store_skill(
+            "convertir_devise", ["récupérer taux", "multiplier"], success=True
+        )
         mem.store_skill("chercher_vol", ["appeler API", "parser JSON"], success=False)
 
         skills = mem.retrieve_skills("convertir")
@@ -262,7 +303,7 @@ class TestMemoryV2Integration:
         assert len(mem.procedural.all()) == 0
 
     def test_retrieve_mixes_types(self):
-        """La recherche doit retourner des résultats épisodiques, sémantiques et procéduraux."""
+        """Retourne des résultats épisodiques, sémantiques et procéduraux."""
         mem = MemoryV2()
         mem.store_episode("épisode test", "sortie test")
         mem.store_fact("fait test Python", importance=0.9)
@@ -275,6 +316,7 @@ class TestMemoryV2Integration:
 # ============================================================
 # PERSISTANCE (si ChromaDB dispo)
 # ============================================================
+
 
 class TestPersistence:
     def test_chromadb_persists_data(self):

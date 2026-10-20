@@ -171,9 +171,7 @@ async def test_google_search_uses_duckduckgo_without_serpapi(
         async def __aexit__(self, *args: object) -> None:
             pass
 
-        async def get(
-            self, url: str, params: dict[str, str]
-        ) -> httpx.Response:
+        async def get(self, url: str, params: dict[str, str]) -> httpx.Response:
             assert url == "https://html.duckduckgo.com/html/"
             assert params == {"q": "Floby"}
             return httpx.Response(
@@ -207,9 +205,7 @@ async def test_google_search_reports_when_public_search_requires_verification(
         async def __aexit__(self, *args: object) -> None:
             pass
 
-        async def get(
-            self, url: str, params: dict[str, str]
-        ) -> httpx.Response:
+        async def get(self, url: str, params: dict[str, str]) -> httpx.Response:
             return httpx.Response(
                 202,
                 text="verification required",

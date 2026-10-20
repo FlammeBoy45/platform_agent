@@ -1,6 +1,6 @@
 # working_memory.py
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 
@@ -19,19 +19,19 @@ class WorkingMemory:
     def put(self, key: str, value: Any) -> None:
         """Stocke une valeur avec TTL."""
         self._store[key] = value
-        self._timestamps[key] = datetime.utcnow()
+        self._timestamps[key] = datetime.now(UTC)
 
     def get(self, key: str) -> Any | None:
         """Récupère une valeur si elle n'a pas expiré."""
         if key not in self._store:
             return None
-        
-        age = datetime.utcnow() - self._timestamps[key]
+
+        age = datetime.now(UTC) - self._timestamps[key]
         if age > self._ttl:
             del self._store[key]
             del self._timestamps[key]
             return None
-        
+
         return self._store[key]
 
     def get_all(self) -> dict[str, Any]:
@@ -44,7 +44,7 @@ class WorkingMemory:
         self._cleanup()
         if not self._store:
             return ""
-        
+
         lines = ["\nMÉMOIRE DE TRAVAIL (contexte immédiat):"]
         for key, value in self._store.items():
             lines.append(f"- {key}: {value}")
@@ -57,11 +57,8 @@ class WorkingMemory:
 
     def _cleanup(self) -> None:
         """Supprime les entrées expirées."""
-        now = datetime.utcnow()
-        expired = [
-            key for key, ts in self._timestamps.items()
-            if now - ts > self._ttl
-        ]
+        now = datetime.now(UTC)
+        expired = [key for key, ts in self._timestamps.items() if now - ts > self._ttl]
         for key in expired:
             del self._store[key]
             del self._timestamps[key]

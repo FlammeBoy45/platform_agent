@@ -28,6 +28,7 @@ from src.domain.protocols.event_bus import EventBus
 from src.domain.protocols.llm_provider import LLMProvider
 from src.domain.protocols.logger import LoggerProtocol
 from src.domain.protocols.memory import AgentMemory, LongTermMemory
+from src.domain.protocols.session_store import SessionStore
 from src.domain.protocols.tool import Tool, ToolProvider
 
 ConfirmationHandler = Callable[[str, dict[str, Any]], Awaitable[bool]]
@@ -54,19 +55,28 @@ class AgentRuntime:
         memory_v2: AgentMemory | None = None,
         current_role: Role = Role.USER,
         confirmation_handler: ConfirmationHandler | None = None,
+        session_store: SessionStore | None = None,
     ) -> None:
 
         self.llm = llm
         self.logger = logger
         self.tools = tools
         self.event_bus = event_bus
+        self.session_store = session_store
 
         self.permissions = PermissionManager(current_role=current_role)
         self.confirmation_handler = confirmation_handler
         self.evaluator = ActionEvaluator()  # ✅
 
         # Core modules
-        self.conversation = ConversationManager(self.MAX_MESSAGES)
+        self.conversation = ConversationManager(
+            self.MAX_MESSAGES,
+            on_message=self._persist_conversation_message,
+        )
+        if self.session_store:
+            self.conversation.restore_messages(
+                self.session_store.load_messages(self.MAX_MESSAGES)
+            )
         self.memory_manager = MemoryManager(memory)
         self.parser = parser or ResponseParser(logger)
         self.prompter = prompter or PromptManager()
@@ -86,6 +96,10 @@ class AgentRuntime:
         self.working_memory = WorkingMemory(ttl_seconds=300)
 
         self.current_plan: Plan | None = None
+        if self.session_store:
+            saved_plan = self.session_store.load_unfinished_plan()
+            if saved_plan:
+                self.current_plan = Plan.model_validate(saved_plan)
         self._last_responses: list[str] = []
         self._loop_count: int = 0
 
@@ -96,8 +110,23 @@ class AgentRuntime:
     def _build_messages(self, system_prompt: str) -> list[dict[str, str]]:
         return [
             {"role": "system", "content": system_prompt},
-            *self.conversation.get_messages_as_dicts()
+            *self.conversation.get_messages_as_dicts(),
         ]
+
+    def _persist_conversation_message(self, role: str, content: str) -> None:
+        if self.session_store:
+            event_type = "user_message" if role == "user" else "assistant_message"
+            self.session_store.append_event(event_type, {"content": content})
+
+    def _record_session_event(self, event_type: str, data: dict[str, Any]) -> None:
+        if self.session_store:
+            self.session_store.append_event(event_type, data)
+
+    def _persist_plan_state(self) -> None:
+        if self.session_store and self.current_plan:
+            self._record_session_event(
+                "plan_snapshot", {"plan": self.current_plan.model_dump()}
+            )
 
     def _is_tool_allowed(self, tool: Tool, user_input: str) -> bool:
         if not tool.trigger_words:
@@ -108,10 +137,10 @@ class AgentRuntime:
         if any(marker in normalized for marker in tool.trigger_words):
             return True
 
-        if tool.name == "file_crud" and re.search(r'\.[a-z0-9]{1,5}\b', normalized):
+        if tool.name == "file_crud" and re.search(r"\.[a-z0-9]{1,5}\b", normalized):
             return True
 
-        if tool.name == "echo" and not tool.chat_safe:
+        if tool.name == "echo" and not getattr(tool, "chat_safe", True):
             return False
 
         return False
@@ -129,7 +158,7 @@ class AgentRuntime:
             "Tu es un assistant concis et chaleureux. "
             "Réponds UNIQUEMENT avec ce format JSON:\n"
             '{"tool":"final","args":{"content":"ta réponse ici"}}\n\n'
-            "Exemple: {\"tool\":\"final\",\"args\":{\"content\":\"Je vais bien, merci !\"}}"
+            'Exemple: {"tool":"final","args":{"content":"Je vais bien, merci !"}}'
         )
 
         messages = [
@@ -157,7 +186,18 @@ class AgentRuntime:
         normalized = response.strip().lower()
 
         return (
-            normalized in {"", "final", "json", "none", "null", "plan", "tool", "réponse directe.", "réponse directe"}
+            normalized
+            in {
+                "",
+                "final",
+                "json",
+                "none",
+                "null",
+                "plan",
+                "tool",
+                "réponse directe.",
+                "réponse directe",
+            }
             or normalized.startswith("plan actuel")
             or normalized.startswith('{"goal"')
             or len(normalized) < 3
@@ -169,7 +209,10 @@ class AgentRuntime:
 
     def _is_loop_detected(self, response: str, user_input: str) -> bool:
         """Détecte si le LLM tourne en boucle sur une réponse inutile."""
-        if self._last_responses and response.strip() == self._last_responses[-1].strip():
+        if (
+            self._last_responses
+            and response.strip() == self._last_responses[-1].strip()
+        ):
             self._loop_count += 1
         else:
             self._loop_count = 0
@@ -189,22 +232,76 @@ class AgentRuntime:
             self.current_plan
             and any(
                 task.status in {"pending", "in_progress"}
+                or (task.status == "failed" and task.attempts < task.max_attempts)
                 for task in self.current_plan.tasks
             )
         )
 
+    def _set_task_result(self, task: Task, success: bool, result: str) -> None:
+        task.result = result[:2_000]
+        if success:
+            task.status = "completed"
+        else:
+            task.attempts += 1
+            task.status = "failed"
+        self._persist_plan_state()
+
+    @staticmethod
+    def _tool_result_succeeded(result: str) -> bool:
+        normalized = result.casefold()
+        failure_markers = (
+            "erreur",
+            "échec",
+            "echec",
+            "impossible",
+            "refus",
+            "refusé",
+            "refusee",
+            "introuvable",
+            "invalide",
+            "annulé",
+            "annule",
+            "timeout",
+            "code sortie: 1",
+            "failed",
+            "error",
+            "denied",
+            "not found",
+            "timezone inconnue",
+            "url manquante",
+            "creation refusee",
+            "création refusée",
+            "modification impossible",
+            "modification refusee",
+            "suppression impossible",
+            "suppression refusee",
+            "lecture impossible",
+            "lecture refusee",
+            "liste impossible",
+            "chemin refuse",
+            "chemin refusé",
+            "action invalide",
+            "mode invalide",
+            "url refusee",
+            "recherche impossible",
+            "recherche interrompue",
+            "accès refusé",
+            "acces refuse",
+            "permission refusée",
+            "permission refusee",
+        )
+        normalized = normalized.strip()
+        return bool(normalized) and not normalized.startswith(failure_markers)
+
     def _merge_plan_update(self, proposed: Plan) -> Plan:
         current = self.current_plan
-        if (
-            current is None
-            or not self._has_unfinished_plan()
-            or proposed.goal.strip().casefold() != current.goal.strip().casefold()
-        ):
+        if current is None or not self._has_unfinished_plan():
             return proposed
+        if proposed.goal.strip().casefold() != current.goal.strip().casefold():
+            return current
 
         current_tasks = {
-            task.description.strip().casefold(): task
-            for task in current.tasks
+            task.description.strip().casefold(): task for task in current.tasks
         }
         merged_tasks: list[Task] = []
         proposed_descriptions: set[str] = set()
@@ -256,31 +353,100 @@ class AgentRuntime:
     def _has_action_intent(self, user_input: str) -> bool:
         """Détecte si l'utilisateur demande une action."""
         action_keywords = [
-            "créer", "crée", "cree", "creer", "fais", "faire", "prépare",
-            "préparer", "prepare", "preparer", "ponds", "implémente",
-            "implemente", "supprimer", "supprime", "effacer", "efface",
-            "modifier", "modifie", "ajouter", "ajoute", "écrire", "ecrire",
-            "lis", "lire", "lit", "déplacer", "copier", "calcule", "cherche",
-            "recherche", "google", "internet", "web", "prix", "cours", "valeur",
-            "script", "code", "python", "programme", "fonction", "algorithme",
-            "heure", "date", "aujourd'hui", "demain",
+            "créer",
+            "crée",
+            "cree",
+            "creer",
+            "fais",
+            "faire",
+            "prépare",
+            "préparer",
+            "prepare",
+            "preparer",
+            "ponds",
+            "implémente",
+            "implemente",
+            "supprimer",
+            "supprime",
+            "effacer",
+            "efface",
+            "modifier",
+            "modifie",
+            "ajouter",
+            "ajoute",
+            "écrire",
+            "ecrire",
+            "lis",
+            "lire",
+            "lit",
+            "déplacer",
+            "copier",
+            "calcule",
+            "cherche",
+            "recherche",
+            "google",
+            "internet",
+            "web",
+            "prix",
+            "cours",
+            "valeur",
+            "script",
+            "code",
+            "python",
+            "programme",
+            "fonction",
+            "algorithme",
+            "heure",
+            "date",
+            "aujourd'hui",
+            "demain",
         ]
         ui = user_input.lower()
         return any(kw in ui for kw in action_keywords)
 
-    def _get_forced_tool_for_intent(self, user_input: str) -> tuple[str, dict]:
+    def _get_forced_tool_for_intent(
+        self, user_input: str
+    ) -> tuple[str, dict[str, Any]]:
         """Retourne le tool et les args forcés selon l'intention détectée."""
         ui = user_input.lower()
 
         file_targets = (
-            "fichier", "file", "module", "modou", "dossier", "folder",
-            "répertoire", "repertoire",
+            "fichier",
+            "file",
+            "module",
+            "modou",
+            "dossier",
+            "folder",
+            "répertoire",
+            "repertoire",
         )
         file_actions = (
-            "crée", "créer", "cree", "creer", "fais", "faire", "prépare",
-            "préparer", "prepare", "preparer", "ajoute", "ajouter", "écris",
-            "ecris", "écrire", "ecrire", "lis", "lire", "ouvre", "ouvrir",
-            "modifie", "modifier", "supprime", "supprimer", "efface", "effacer",
+            "crée",
+            "créer",
+            "cree",
+            "creer",
+            "fais",
+            "faire",
+            "prépare",
+            "préparer",
+            "prepare",
+            "preparer",
+            "ajoute",
+            "ajouter",
+            "écris",
+            "ecris",
+            "écrire",
+            "ecrire",
+            "lis",
+            "lire",
+            "ouvre",
+            "ouvrir",
+            "modifie",
+            "modifier",
+            "supprime",
+            "supprimer",
+            "efface",
+            "effacer",
         )
         if any(word in ui for word in file_targets) and any(
             word in ui for word in file_actions
@@ -291,31 +457,76 @@ class AgentRuntime:
         ):
             return ("file_crud", {"action": "", "path": "", "content": ""})
 
-        calc_keywords = ["calcule", "calcul", "combien fait", "additionne", "multiplie",
-                         "divise", "soustrait", "pourcentage"]
+        calc_keywords = [
+            "calcule",
+            "calcul",
+            "combien fait",
+            "additionne",
+            "multiplie",
+            "divise",
+            "soustrait",
+            "pourcentage",
+        ]
         if any(kw in ui for kw in calc_keywords):
             return ("calculator", {"expression": user_input})
 
-        crypto_keywords = ["bitcoin", "ethereum", "crypto", "prix", "cours", "btc", "eth",
-                          "valeur", "acheter", "vendre"]  # ✅
+        crypto_keywords = [
+            "bitcoin",
+            "ethereum",
+            "crypto",
+            "prix",
+            "cours",
+            "btc",
+            "eth",
+            "valeur",
+            "acheter",
+            "vendre",
+        ]  # ✅
         if any(kw in ui for kw in crypto_keywords):
             return ("crypto_price", {"symbol": "BTC"})
 
-        time_keywords = ["heure", "date", "aujourd'hui", "demain", "quel jour", "quel jour de", "quel mois", "quelle année"
-                         "time", "date", "day", "month", "year", ]  # ✅
+        time_keywords = [
+            "heure",
+            "date",
+            "aujourd'hui",
+            "demain",
+            "quel jour",
+            "quel jour de",
+            "quel mois",
+            "quelle année",
+            "time",
+            "day",
+            "month",
+            "year",
+        ]
         if any(kw in ui for kw in time_keywords):
-            return ("datetime", {"format": "%H:%M"})
+            offset = re.search(r"\butc\s*([+-]\s*\d{1,2}(?::?\d{2})?)", ui)
+            timezone = f"UTC{offset.group(1).replace(' ', '')}" if offset else "UTC"
+            return ("datetime", {"timezone": timezone})
 
         search_keywords = ["cherche", "recherche", "google", "internet", "web"]
         if any(kw in ui for kw in search_keywords):
-            if any(phrase in ui for phrase in (
-                "dans le code", "dans les fichiers", "dans le projet",
-                "où est défini", "ou est defini",
-            )):
+            if any(
+                phrase in ui
+                for phrase in (
+                    "dans le code",
+                    "dans les fichiers",
+                    "dans le projet",
+                    "où est défini",
+                    "ou est defini",
+                )
+            ):
                 return ("workspace_search", {"query": user_input, "path": "."})
             return ("google_search", {"query": user_input})
-        
-        code_keywords = ["script", "code", "python", "programme", "fonction", "algorithme"]
+
+        code_keywords = [
+            "script",
+            "code",
+            "python",
+            "programme",
+            "fonction",
+            "algorithme",
+        ]
         if any(kw in ui for kw in code_keywords):
             return ("python_code", {"code": user_input})
 
@@ -328,7 +539,9 @@ class AgentRuntime:
     def _answer_tools_list_if_requested(self, user_input: str) -> str | None:
         normalized = user_input.lower()
 
-        if "tool" in normalized and any(x in normalized for x in ["liste", "disponible", "quels"]):
+        if "tool" in normalized and any(
+            x in normalized for x in ["liste", "disponible", "quels"]
+        ):
             return "\n".join(
                 ["Tools disponibles :"]
                 + [f"- {t.name}: {t.description}" for t in self.tools.list_tools()]
@@ -369,13 +582,12 @@ class AgentRuntime:
             return "Je n'ai encore rien mémorisé."
 
         entries = ["Voici mes souvenirs récents :"]
-        entries.extend(
-            f"- {' '.join(fact.text.split())}"
-            for fact in facts
-        )
+        entries.extend(f"- {' '.join(fact.text.split())}" for fact in facts)
         return "\n".join(entries)
 
-    async def _run_tool(self, tool: Tool, args: dict[str, Any], user_input: str, trace_id: str) -> str:
+    async def _run_tool(
+        self, tool: Tool, args: dict[str, Any], user_input: str, trace_id: str
+    ) -> str:
         authorization_args = args
         if hasattr(tool, "infer_args"):
             authorization_args = tool.infer_args(user_input, args)
@@ -389,22 +601,51 @@ class AgentRuntime:
             if self.confirmation_handler is None:
                 raise ToolAuthorizationError(
                     f"Action '{tool.name}' bloquée : une confirmation utilisateur "
-                    "est requise, mais aucun gestionnaire de confirmation n'est configuré."
+                    "est requise, mais aucun gestionnaire de confirmation "
+                    "n'est configuré."
                 )
             if not await self.confirmation_handler(tool.name, authorization_args):
                 raise ToolAuthorizationError(
                     f"Action '{tool.name}' annulée : confirmation refusée."
                 )
-        
+
         try:
+            self._record_session_event(
+                "tool_started",
+                {
+                    "trace_id": trace_id,
+                    "tool": tool.name,
+                },
+            )
             start = time.time()
-            result = await self.executor.execute(tool.name, args, user_input, trace_id=trace_id)
+            result = await self.executor.execute(
+                tool.name, args, user_input, trace_id=trace_id
+            )
             duration = (time.time() - start) * 1000
+            self._record_session_event(
+                "tool_finished",
+                {
+                    "trace_id": trace_id,
+                    "tool": tool.name,
+                    "duration_ms": round(duration, 2),
+                    "result": result[:2_000],
+                },
+            )
             return result
         except ToolExecutionError as e:
             msg = f"ERREUR TOOL : {e}"
+            self._record_session_event(
+                "tool_failed",
+                {
+                    "trace_id": trace_id,
+                    "tool": tool.name,
+                    "error": msg[:2_000],
+                },
+            )
             if self.event_bus:
-                await self.event_bus.emit("agent.error", {"trace_id": trace_id, "error": msg})
+                await self.event_bus.emit(
+                    "agent.error", {"trace_id": trace_id, "error": msg}
+                )
             return msg
 
     # ============================================================
@@ -419,6 +660,7 @@ class AgentRuntime:
         self.logger.info(f"Autonomous session started | trace_id={trace_id}")
 
         try:
+            self._record_session_event("turn_started", {"trace_id": trace_id})
             if self.event_bus:
                 await self.event_bus.emit(
                     "agent.started",
@@ -443,6 +685,26 @@ class AgentRuntime:
             if metrics.status == "running":
                 metrics.status = "completed"
             self.evaluator.end_session(metrics)
+            self._record_session_event(
+                "turn_finished",
+                {
+                    "trace_id": trace_id,
+                    "status": metrics.status,
+                    "metrics": {
+                        "actions": metrics.total_actions,
+                        "successful_actions": metrics.successful_actions,
+                        "failed_actions": metrics.failed_actions,
+                        "success_rate": metrics.success_rate,
+                        "retries": metrics.retries,
+                        "replans": metrics.replans,
+                        "duration_ms": round(metrics.session_duration_ms, 2),
+                    },
+                    "response": response[:2_000] if response else None,
+                    "error": str(error)[:2_000] if error else None,
+                },
+            )
+            if self._has_unfinished_plan():
+                self._persist_plan_state()
             if self.event_bus:
                 event_type = (
                     "agent.completed"
@@ -503,7 +765,10 @@ class AgentRuntime:
         save_memory_request = self.memory_manager.is_save_memory_request(user_input)
         if remembered_fact or save_memory_request:
             if self.memory_manager.memory is None:
-                response = "La mémoire persistante est désactivée; je ne peux pas l'enregistrer."
+                response = (
+                    "La mémoire persistante est désactivée; "
+                    "je ne peux pas l'enregistrer."
+                )
             elif remembered_fact:
                 response = "C'est noté, je l'ai enregistré dans ma mémoire persistante."
             else:
@@ -549,23 +814,30 @@ class AgentRuntime:
             return memory_response
 
         # PLAN INIT
-        resume_plan = (
-            self._has_unfinished_plan()
-            and self._is_plan_resume_request(user_input)
+        resume_plan = self._has_unfinished_plan() and self._is_plan_resume_request(
+            user_input
         )
         if resume_plan and self.current_plan:
-            for task in self.current_plan.tasks:
-                if task.status == "in_progress":
-                    task.status = "pending"
+            for pending_task in self.current_plan.tasks:
+                if pending_task.status == "in_progress" or (
+                    pending_task.status == "failed"
+                    and pending_task.attempts < pending_task.max_attempts
+                ):
+                    pending_task.status = "pending"
+            self._persist_plan_state()
         else:
             self.current_plan = await self.planner.create_plan(user_input)
+            self._persist_plan_state()
 
         last_response = ""
 
         for _ in range(max_steps):
-
             # TASK PICK
-            task = self.scheduler.get_next_task(self.current_plan) if self.current_plan else None
+            task = (
+                self.scheduler.get_next_task(self.current_plan)
+                if self.current_plan
+                else None
+            )
             task_query = task.description if task else user_input
 
             # MEMORY RETRIEVAL
@@ -597,7 +869,7 @@ class AgentRuntime:
                 system_prompt += f"\n\nTACHE ACTIVE:\n{task.description}"
                 if task.status == "pending":
                     task.status = "in_progress"
-
+                    self._persist_plan_state()
 
             # =========================
             # LLM CALL
@@ -605,72 +877,115 @@ class AgentRuntime:
             raw = await self._safe_chat(self._build_messages(system_prompt))
             action = self.parser.parse_action(raw)
 
-                        # =========================
+            # =========================
             # ✅ REFUSER FINAL SI ACTION DEMANDÉE
             # =========================
             if action.tool == "final" and self._has_action_intent(user_input):
                 response_text = str(action.args.get("content", ""))
-                self.logger.warning(
-                    f"Action demandée mais LLM répond final: '{response_text[:80]}...' → Forcer tool."
-                )
                 forced_tool, forced_args = self._get_forced_tool_for_intent(user_input)
-                
-                if forced_tool != "final":
+
+                if forced_tool != "final" and self.tools.get(forced_tool):
+                    self.logger.warning(
+                        f"Action demandée mais LLM répond final: "
+                        f"'{response_text[:80]}...' → Forcer tool."
+                    )
                     action.tool = forced_tool
                     action.args = forced_args
-                    self.logger.info(f"Tool forcé: {forced_tool} avec args {forced_args}")
+                    self.logger.info(
+                        f"Tool forcé: {forced_tool} avec args {forced_args}"
+                    )
 
             # =========================
             # ANTI-ARGS-VIDE
             # =========================
-            if action.tool and action.tool != "final" and (not action.args or action.args == {}):
+            if action.tool and action.tool != "final":
+                tool_ref = self.tools.get(action.tool)
+                infer_args = getattr(tool_ref, "infer_args", None)
+                if callable(infer_args):
+                    action.args = infer_args(user_input, action.args)
+
+            if (
+                action.tool
+                and action.tool != "final"
+                and self.tools.get(action.tool)
+                and (not action.args or action.args == {})
+            ):
                 self.logger.warning(f"Args vides pour '{action.tool}'. Correction...")
                 tool_info = ""
                 tool_ref = self.tools.get(action.tool)
                 if tool_ref:
-                    args_schema = ", ".join(f'"{k}": "{v}"' for k, v in tool_ref.args_schema.items())
+                    args_schema = ", ".join(
+                        f'"{k}": "{v}"' for k, v in tool_ref.args_schema.items()
+                    )
                     tool_info = (
                         f"L'outil à utiliser est OBLIGATOIREMENT '{action.tool}'. "
-                        f"Format requis : {{\"tool\":\"{action.tool}\", "
-                        f"\"args\":{{{args_schema}}}, "
-                        f"\"plan\":{{\"goal\":\"...\", \"tasks\":[{{\"description\":\"...\", \"status\":\"pending\"}}]}}}}"
+                        f'Format requis : {{"tool":"{action.tool}", '
+                        f'"args":{{{args_schema}}}, '
+                        f'"plan":{{"goal":"...", "tasks":'
+                        f'[{{"description":"...", "status":"pending"}}]}}}}'
                     )
 
                 correction_prompt = (
                     f"Tu as choisi l'outil '{action.tool}' mais avec des args vides.\n"
                     f"Corrige UNIQUEMENT les args, ne change PAS d'outil.\n\n"
                     f"{tool_info}\n\n"
-                    f"Requête utilisateur : \"{user_input}\"\n\n"
+                    f'Requête utilisateur : "{user_input}"\n\n'
                     f"Réponds UNIQUEMENT en JSON correct."
                 )
                 try:
-                    raw = await self._safe_chat([
-                        {"role": "system", "content": correction_prompt},
-                    ])
+                    raw = await self._safe_chat(
+                        [
+                            {"role": "system", "content": correction_prompt},
+                        ]
+                    )
                     action = self.parser.parse_action(raw)
                 except Exception:
                     pass
 
                 if action.tool != "final" and (not action.args or action.args == {}):
-                    self.logger.error(f"Échec correction args pour '{action.tool}', fallback final")
+                    self.logger.error(
+                        f"Échec correction args pour '{action.tool}', fallback final"
+                    )
                     action.tool = "final"
-                    action.args = {"content": f"Je n'ai pas réussi à utiliser {action.tool}. Peux-tu reformuler ?"}
+                    action.args = {
+                        "content": (
+                            f"Je n'ai pas réussi à utiliser {action.tool}. "
+                            "Peux-tu reformuler ?"
+                        )
+                    }
 
             # =========================
             # DÉTECTEUR DE BOUCLE
             # =========================
             if action.tool == "final":
                 response_text = str(action.args.get("content", ""))
-                if self._is_loop_detected(response_text, user_input) and self._has_action_intent(user_input):
-                    forced_tool, forced_args = self._get_forced_tool_for_intent(user_input)
+                if self._is_loop_detected(
+                    response_text, user_input
+                ) and self._has_action_intent(user_input):
+                    forced_tool, forced_args = self._get_forced_tool_for_intent(
+                        user_input
+                    )
                     self.logger.warning(f"Boucle détectée → force '{forced_tool}'")
                     action.tool = forced_tool
                     action.args = forced_args
 
             if action.plan:
-                self.current_plan = self._merge_plan_update(action.plan)
+                for proposed_task in action.plan.tasks:
+                    proposed_task.status = "pending"
+                    proposed_task.result = None
+                    proposed_task.attempts = 0
+                proposed_plan = self._merge_plan_update(action.plan)
+                validated_plan = self.planner.validate_plan(proposed_plan)
+                if validated_plan is None:
+                    self.logger.warning(
+                        "Plan du LLM ignoré : dépendance inconnue, doublon, "
+                        "cycle ou trop d'étapes."
+                    )
+                else:
+                    self.current_plan = validated_plan
+                    self._persist_plan_state()
 
-            tool_name = str(action.tool or "final")
+            tool_name = str(action.tool or "final").strip().casefold()
             args = action.args or {}
 
             # =========================
@@ -681,21 +996,39 @@ class AgentRuntime:
 
                 if self._needs_final_retry(response):
                     response = await self._force_final_response(
-                        system_prompt,
-                        "Réponds naturellement et brièvement."
+                        system_prompt, "Réponds naturellement et brièvement."
                     )
 
-                self.conversation.add_assistant_message(response)
-
-                if self.memory_v2:
-                    self.memory_v2.store_episode(user_input, {
-                        "type": "final",
-                        "output": response,
-                        "task": task.description if task else None,
-                    })
-
                 if task:
-                    task.status = "completed"
+                    forced_tool, _ = self._get_forced_tool_for_intent(
+                        f"{user_input} {task.description}"
+                    )
+                    if (
+                        self._has_action_intent(f"{user_input} {task.description}")
+                        and forced_tool != "final"
+                        and self.tools.get(forced_tool)
+                    ):
+                        task.status = "in_progress"
+                        task.result = "Aucune réussite d'outil confirmée."
+                        response = (
+                            "Je ne peux pas confirmer que l'action a été exécutée; "
+                            "je la laisse non terminée."
+                        )
+                        self._persist_plan_state()
+                        self.conversation.add_assistant_message(response)
+                        return response
+                    self._set_task_result(task, True, response)
+
+                self.conversation.add_assistant_message(response)
+                if self.memory_v2:
+                    self.memory_v2.store_episode(
+                        user_input,
+                        {
+                            "type": "final",
+                            "output": response,
+                            "task": task.description if task else None,
+                        },
+                    )
 
                 if (
                     task
@@ -712,14 +1045,16 @@ class AgentRuntime:
             # =========================
             if tool_name in {"", "none", "null"}:
                 response = await self._force_final_response(
-                    system_prompt,
-                    "Réponds directement à l'utilisateur."
+                    system_prompt, "Réponds directement à l'utilisateur."
                 )
                 if self.memory_v2:
-                    self.memory_v2.store_episode(user_input, {
-                        "type": "direct",
-                        "output": response,
-                    })
+                    self.memory_v2.store_episode(
+                        user_input,
+                        {
+                            "type": "direct",
+                            "output": response,
+                        },
+                    )
                 self.conversation.add_assistant_message(response)
                 return response
 
@@ -735,19 +1070,19 @@ class AgentRuntime:
                     f"Tool inconnu: '{tool_name}'. "
                     f"Disponibles: {[t.name for t in self.tools.list_tools()]}"
                 )
-                observation = await self._force_final_response(
-                    system_prompt,
-                    f"L'outil '{tool_name}' n'existe pas. Utilise UNIQUEMENT les outils disponibles "
-                    f"({', '.join(t.name for t in self.tools.list_tools())}) "
-                    f"pour répondre à : {user_input}"
+                available_tools = ", ".join(
+                    tool.name for tool in self.tools.list_tools()
+                )
+                observation = (
+                    f'Je n\'ai pas acces au tool "{tool_name}". '
+                    f"Tools disponibles: {available_tools}."
                 )
                 self.conversation.add_assistant_message(observation)
                 return observation
 
             elif not self._is_tool_allowed(tool, user_input):
                 observation = await self._force_final_response(
-                    system_prompt,
-                    f"Réponds à: {user_input}"
+                    system_prompt, f"Réponds à: {user_input}"
                 )
                 success = False
 
@@ -756,8 +1091,8 @@ class AgentRuntime:
                     start_time = time.time()
                     observation = await self._run_tool(tool, args, user_input, trace_id)
                     duration_ms = (time.time() - start_time) * 1000
-                    success = "ERREUR" not in observation and "Échec" not in observation
-                    
+                    success = self._tool_result_succeeded(observation)
+
                     # ✅ Enregistrer métrique
                     self.evaluator.record_action(
                         metrics, tool_name, success, duration_ms, observation
@@ -778,7 +1113,11 @@ class AgentRuntime:
                     if self.event_bus:
                         await self.event_bus.emit(
                             "agent.authorization_denied",
-                            {"trace_id": trace_id, "tool": tool_name, "reason": response},
+                            {
+                                "trace_id": trace_id,
+                                "tool": tool_name,
+                                "reason": response,
+                            },
                         )
                     return response
                 except Exception as e:
@@ -792,14 +1131,18 @@ class AgentRuntime:
             # ✅ RÉFLEXION (skip si return_direct + succès)
             # =========================
             goal = task.description if task else user_input
-            
+
             # Ne pas réfléchir sur les tools à retour direct qui ont réussi
             skip_reflection = (
                 tool and tool.return_direct and success and "ERREUR" not in observation
             )
-            
+
             if skip_reflection:
-                evaluation = {"status": "ok", "analysis": "Succès direct", "suggestion": ""}
+                evaluation = {
+                    "status": "ok",
+                    "analysis": "Succès direct",
+                    "suggestion": "",
+                }
             else:
                 evaluation = await self.reflector.evaluate(
                     goal=goal,
@@ -817,26 +1160,32 @@ class AgentRuntime:
                 f"[REFLECTION] status={evaluation['status']} | "
                 f"analysis={evaluation['analysis'][:100]}"
             )
-            
+
             # =========================
             # ✅ REPLANIFICATION (limité à 1 retry)
             # =========================
-            retry_count = getattr(self, '_retry_count', 0)
-            
+            retry_count = getattr(self, "_retry_count", 0)
+
             if evaluation["status"] in {"replan", "retry"} and self.current_plan:
                 if retry_count >= 1:
                     self.logger.warning(f"Max retries atteint ({retry_count}), abandon")
-                    response = f"Je n'ai pas réussi après {retry_count} tentative(s). Dernier résultat: {observation}"
+                    response = (
+                        f"Je n'ai pas réussi après {retry_count} tentative(s). "
+                        f"Dernier résultat: {observation}"
+                    )
                     self.conversation.add_assistant_message(response)
                     if task:
-                        task.status = "failed"
+                        self._set_task_result(task, False, observation)
                     metrics.status = "failed"
                     return response
-                
+
                 self._retry_count = retry_count + 1
                 suggestion = evaluation.get("suggestion", "")
-                self.logger.warning(f"Replanification #{retry_count + 1}: {evaluation['status']} - {suggestion}")
-                
+                self.logger.warning(
+                    f"Replanification #{retry_count + 1}: "
+                    f"{evaluation['status']} - {suggestion}"
+                )
+
                 if evaluation["status"] == "retry":
                     system_prompt += (
                         f"\n\n⚠️ RÉFLEXION : {evaluation['analysis']}\n"
@@ -844,14 +1193,13 @@ class AgentRuntime:
                         f"Réessaie avec cette approche."
                     )
                     continue
-                
+
                 elif evaluation["status"] == "replan":
                     self.current_plan = await self.planner.create_plan(
                         f"{goal} (échec précédent: {evaluation['analysis']})"
                     )
                     continue
-                
-            
+
             # =========================
             # GIVE UP
             # =========================
@@ -862,14 +1210,13 @@ class AgentRuntime:
                 )
                 self.conversation.add_assistant_message(response)
                 if task:
-                    task.status = "failed"
+                    self._set_task_result(task, False, evaluation["analysis"])
                 metrics.status = "failed"
                 return response
-            
 
             # TASK UPDATE
             if task:
-                task.status = "completed" if success else "failed"
+                self._set_task_result(task, success, observation)
 
             # =========================
             # SKILL MEMORY
@@ -881,18 +1228,18 @@ class AgentRuntime:
                     success=True,
                 )
                 # ✅ WORKING MEMORY
-                self.working_memory.put(
-                    f"resultat_{tool_name}",
-                    str(observation)[:200]
-                )
+                self.working_memory.put(f"resultat_{tool_name}", str(observation)[:200])
             # EPISODIC MEMORY
             if self.memory_v2:
-                self.memory_v2.store_episode(user_input, {
-                    "type": "tool_execution",
-                    "tool": tool_name,
-                    "output": observation,
-                    "success": success,
-                })
+                self.memory_v2.store_episode(
+                    user_input,
+                    {
+                        "type": "tool_execution",
+                        "tool": tool_name,
+                        "output": observation,
+                        "success": success,
+                    },
+                )
 
             # RETURN DIRECT TOOL
             if tool and tool.return_direct:
@@ -923,6 +1270,8 @@ class AgentRuntime:
 
     def reset(self) -> None:
         self.conversation.reset()
+        if self.session_store:
+            self.session_store.new_session()
         self.current_plan = None
         self._last_responses = []
         self._loop_count = 0

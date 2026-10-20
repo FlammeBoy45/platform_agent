@@ -121,9 +121,7 @@ class JsonMemoryStore:
             text=fact,
         )
 
-    def store_skill(
-        self, task: str, steps: list[str], success: bool
-    ) -> None:
+    def store_skill(self, task: str, steps: list[str], success: bool) -> None:
         value = json.dumps(
             {"steps": steps, "success": success},
             ensure_ascii=False,
@@ -139,7 +137,8 @@ class JsonMemoryStore:
 
     def retrieve_skills(self, query: str) -> list[MemoryFact]:
         matching = [
-            fact for fact in self.search(query, limit=len(self._facts))
+            fact
+            for fact in self.search(query, limit=len(self._facts))
             if fact.key.startswith("skill.")
         ]
         return matching[:10]
@@ -202,9 +201,7 @@ class JsonMemoryStore:
     def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = [fact.model_dump(mode="json") for fact in self._facts.values()]
-        temporary_path = self.path.with_name(
-            f"{self.path.name}.{uuid.uuid4().hex}.tmp"
-        )
+        temporary_path = self.path.with_name(f"{self.path.name}.{uuid.uuid4().hex}.tmp")
         try:
             temporary_path.write_text(
                 json.dumps(payload, ensure_ascii=False, indent=2),
@@ -231,11 +228,7 @@ class JsonMemoryStore:
         remove_oldest("skill.", self.MAX_SKILLS)
         while len(self._facts) > self.max_entries:
             oldest_key = next(
-                (
-                    key
-                    for key in self._facts
-                    if key.startswith(("episode.", "skill."))
-                ),
+                (key for key in self._facts if key.startswith(("episode.", "skill."))),
                 next(iter(self._facts)),
             )
             del self._facts[oldest_key]
@@ -262,5 +255,50 @@ class JsonMemoryStore:
         return len(expired_keys)
 
     def _terms(self, text: str) -> set[str]:
-        stop_words = {"est", "suis", "sont", "dans", "avec", "pour", "quoi", "quel", "quelle", "quels", "quelles", "mon", "ma", "mes", "ton", "ta", "tes", "le", "la", "les", "un", "une", "des", "du", "de", "et", "à", "au", "aux", "je", "tu", "il", "elle", "me", "te", "moi", "toi", "que", "qui", "comment"}
-        return {term for term in re.findall(r"[\wÀ-ÿ]+", text.casefold()) if len(term) > 1 and term not in stop_words}
+        stop_words = {
+            "est",
+            "suis",
+            "sont",
+            "dans",
+            "avec",
+            "pour",
+            "quoi",
+            "quel",
+            "quelle",
+            "quels",
+            "quelles",
+            "mon",
+            "ma",
+            "mes",
+            "ton",
+            "ta",
+            "tes",
+            "le",
+            "la",
+            "les",
+            "un",
+            "une",
+            "des",
+            "du",
+            "de",
+            "et",
+            "à",
+            "au",
+            "aux",
+            "je",
+            "tu",
+            "il",
+            "elle",
+            "me",
+            "te",
+            "moi",
+            "toi",
+            "que",
+            "qui",
+            "comment",
+        }
+        return {
+            term
+            for term in re.findall(r"[\wÀ-ÿ]+", text.casefold())
+            if len(term) > 1 and term not in stop_words
+        }

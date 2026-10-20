@@ -26,9 +26,7 @@ class _DuckDuckGoResultsParser(HTMLParser):
             }
             self._capture = "title"
             self._text = []
-        elif tag == "a" and classes.intersection(
-            {"result__snippet", "result-snippet"}
-        ):
+        elif tag == "a" and classes.intersection({"result__snippet", "result-snippet"}):
             self._capture = "snippet"
             self._text = []
 
@@ -103,9 +101,7 @@ class GoogleSearchTool:
         }
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(
-                    "https://serpapi.com/search", params=params
-                )
+                response = await client.get("https://serpapi.com/search", params=params)
                 response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             return f"Echec de la recherche Google : HTTP {exc.response.status_code}."
@@ -124,12 +120,14 @@ class GoogleSearchTool:
             results.append(f"REPONSE DIRECTE : {answer}")
 
         for index, item in enumerate(data.get("organic_results", [])[:5], start=1):
-            results.append(self._format_result(
-                index,
-                item.get("title", "Sans titre"),
-                item.get("snippet", ""),
-                item.get("link", ""),
-            ))
+            results.append(
+                self._format_result(
+                    index,
+                    item.get("title", "Sans titre"),
+                    item.get("snippet", ""),
+                    item.get("link", ""),
+                )
+            )
 
         if results:
             return "\n\n".join(results)
@@ -171,10 +169,7 @@ class GoogleSearchTool:
             if item["title"]
         ]
         if not results:
-            return (
-                "Aucun resultat exploitable trouve via DuckDuckGo "
-                f"pour '{query}'."
-            )
+            return f"Aucun resultat exploitable trouve via DuckDuckGo pour '{query}'."
         return "Recherche web (DuckDuckGo, sans SerpApi) :\n\n" + "\n\n".join(results)
 
     @staticmethod

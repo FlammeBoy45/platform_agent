@@ -34,10 +34,12 @@ class Settings(BaseSettings):
     MAX_RETRIES: int = 3
 
     MEMORY_PATH: str = "data/memory.json"
+    SESSION_PATH: str = "data/sessions.jsonl"
     ENABLE_MEMORY: bool = True
     WORKSPACE_PATH: str = "."
     ENABLE_PYTHON_CODE: bool = False
     AGENT_ROLE: Role = Role.USER
+    AGENT_PLUGIN_MODULES: str = ""
     SERPAPI_API_KEY: SecretStr = Field(default=SecretStr(""))
 
     @property

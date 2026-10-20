@@ -5,7 +5,7 @@ from src.domain.protocols.memory import LongTermMemory
 
 class MemoryManager:
     """Gère l'extraction de faits et la récupération de données personnelles."""
-    
+
     def __init__(self, memory: LongTermMemory | None) -> None:
         self.memory = memory
         self._patterns = (
@@ -88,7 +88,7 @@ class MemoryManager:
                     self.memory.remember(
                         key="user.name",
                         value=name,
-                        text=f"Le nom de l'utilisateur est {name}."
+                        text=f"Le nom de l'utilisateur est {name}.",
                     )
                     return None
 
@@ -104,7 +104,9 @@ class MemoryManager:
             detail = preference.group(1).strip(" .,!?:;")
             if detail:
                 key = f"user.preference.{self._slug(detail)}"
-                self.memory.remember(key, detail, f"Préférence de l'utilisateur : {detail}.")
+                self.memory.remember(
+                    key, detail, f"Préférence de l'utilisateur : {detail}."
+                )
         return None
 
     def save_previous_statement(
@@ -302,7 +304,7 @@ class MemoryManager:
                 "je m'appelle qui",
             )
         )
-        
+
         if not asks_name:
             return None
 

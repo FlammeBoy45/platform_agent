@@ -1,0 +1,13 @@
+from typing import Any, Protocol
+
+
+class SessionStore(Protocol):
+    session_id: str
+
+    def load_messages(self, limit: int) -> list[dict[str, str]]: ...
+
+    def append_event(self, event_type: str, data: dict[str, Any]) -> None: ...
+
+    def new_session(self) -> str: ...
+
+    def load_unfinished_plan(self) -> dict[str, Any] | None: ...

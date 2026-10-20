@@ -47,21 +47,28 @@ REGLES :
 - WORKSPACE : Le dossier de travail est celui configuré par WORKSPACE_PATH (par défaut, la racine du projet), pas un dossier temporaire ni `data/workspace`. Les chemins des outils sont relatifs à cette racine.
 - VERITE DES FICHIERS : N'invente jamais un dossier, un chemin, un fichier ou son contenu. Vérifie avec `file_list`/`file_crud`; affirme une création ou modification uniquement après le succès de l'outil. Ne crée un dossier que si l'utilisateur le demande. Pour un nouveau fichier sans chemin clair, choisis un emplacement existant pertinent dans le projet; si aucun n'est évident, demande où le mettre.
 - ARGS : Remplis TOUJOURS tous les champs obligatoires du tool. JAMAIS d'args vide {}.
+- PLAN : Les dépendances doivent référencer exactement une autre étape et ne former aucun cycle. Ne marque jamais une action terminée sans résultat d'outil confirmé.
 - Si échec, analyse et propose une alternative
 - Format: {"thought": "...", "tool": "nom_outil", "args": {...}, "plan": {...}}
 """
 
+
 class PromptManager:
     """Responsable de la génération des prompts et du formatage du contexte."""
 
-    def build_system_prompt(self, tools: ToolProvider, memory: LongTermMemory | None, user_input: str, plan: Plan | None = None) -> str:
+    def build_system_prompt(
+        self,
+        tools: ToolProvider,
+        memory: LongTermMemory | None,
+        user_input: str,
+        plan: Plan | None = None,
+    ) -> str:
         tool_context = self._format_tools(tools.list_tools(), user_input)
         memory_context = self._format_memory(memory, user_input)
         plan_context = self._format_plan(plan)
 
         return (
-            SYSTEM_PROMPT_TEMPLATE
-            .replace("__TOOLS__", tool_context)
+            SYSTEM_PROMPT_TEMPLATE.replace("__TOOLS__", tool_context)
             .replace("__MEMORY__", memory_context)
             .replace("__PLAN__", plan_context)
         )
@@ -69,23 +76,30 @@ class PromptManager:
     def _format_tools(self, tools: list[Tool], user_input: str = "") -> str:
         if not tools:
             return "- aucun tool disponible"
-        
+
         lines = []
         normalized_input = user_input.lower()
         for t in tools:
-            is_recommended = any(w in normalized_input for w in t.trigger_words) if t.trigger_words else False
+            is_recommended = (
+                any(w in normalized_input for w in t.trigger_words)
+                if t.trigger_words
+                else False
+            )
             prefix = "⭐ " if is_recommended else ""
-            
+
             args_parts = []
             for k, v in t.args_schema.items():
                 args_parts.append(f'"{k}": "{v}"')
             args_str = ", ".join(args_parts)
-            
+
             lines.append(f"- {prefix}{t.name}: {t.description}")
             lines.append(f"  Format args: {{{args_str}}}")
-            
+
             if t.name == "file_crud":
-                lines.append('  Exemple: {"action": "create", "path": "test.txt", "content": "bonjour"}')
+                lines.append(
+                    '  Exemple: {"action": "create", '
+                    '"path": "test.txt", "content": "bonjour"}'
+                )
             elif t.name == "echo":
                 lines.append('  Exemple: {"text": "Bonjour !"}')
             elif t.name == "calculator":
@@ -94,34 +108,50 @@ class PromptManager:
                 lines.append('  Exemple: {"symbol": "BTC"}')
             elif t.name == "datetime":
                 lines.append('  Exemple: {"format": "%H:%M"}')
-                
+
         return "\n".join(lines)
 
     def _format_memory(self, memory: LongTermMemory | None, user_input: str) -> str:
         if not memory:
             return "- aucune mémoire disponible"
-        
+
         normalized_input = user_input.casefold()
         facts = memory.search(user_input, limit=8)
-        asks_about_memory = any(marker in normalized_input for marker in (
-            "souviens", "retiens", "mémoire", "memorise", "préférence", "prefere",
-            "que sais-tu de moi", "qu'est-ce que tu sais sur moi", "qu'est-ce que tu te rappelles",
-            "de quoi te souviens-tu",
-        ))
+        asks_about_memory = any(
+            marker in normalized_input
+            for marker in (
+                "souviens",
+                "retiens",
+                "mémoire",
+                "memorise",
+                "préférence",
+                "prefere",
+                "que sais-tu de moi",
+                "qu'est-ce que tu sais sur moi",
+                "qu'est-ce que tu te rappelles",
+                "de quoi te souviens-tu",
+            )
+        )
         if not facts and asks_about_memory:
             facts = memory.all()[-8:]
-            
+
         if not facts:
             return "- aucun fait mémorisé"
-            
+
         return "\n".join(f"- {f.text}" for f in facts)
 
     def _format_plan(self, plan: Plan | None) -> str:
         if not plan or not plan.tasks:
             return "- Aucun plan actif."
-        
+
         res = [f"Objectif : {plan.goal}"]
         for i, task in enumerate(plan.tasks):
-            status_icon = "✅" if task.status == "completed" else "⏳" if task.status == "in_progress" else "⚪"
-            res.append(f"{i+1}. {status_icon} {task.description}")
+            status_icon = (
+                "✅"
+                if task.status == "completed"
+                else "⏳"
+                if task.status == "in_progress"
+                else "⚪"
+            )
+            res.append(f"{i + 1}. {status_icon} {task.description}")
         return "\n".join(res)

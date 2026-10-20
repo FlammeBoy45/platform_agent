@@ -9,3 +9,7 @@ select = [
     "UP",
     "B"
 ]
+
+[lint.per-file-ignores]
+# Newlines here alter the prompt sent to the model.
+"src/application/orchestrators/prompt_manager.py" = ["E501"]

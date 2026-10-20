@@ -1,25 +1,26 @@
 # semantic_store.py
 
+from datetime import UTC, datetime
+
 from .models import MemoryItem, new_id
-from datetime import datetime
 
 
 class SemanticMemory:
-    def __init__(self):
+    def __init__(self) -> None:
         self.store: list[MemoryItem] = []
 
-    def add_fact(self, content: str, importance: float = 0.5):
+    def add_fact(self, content: str, importance: float = 0.5) -> None:
         self.store.append(
             MemoryItem(
                 id=new_id(),
                 content=content,
                 metadata={"type": "fact"},
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(UTC),
                 importance=importance,
             )
         )
 
-    def all(self):
+    def all(self) -> list[MemoryItem]:
         return self.store
 
     def search(self, query: str, limit: int = 5) -> list[MemoryItem]:
@@ -44,6 +45,6 @@ class SemanticMemory:
 
         scored.sort(key=lambda x: x[0], reverse=True)
         return [item for _, item in scored[:limit]]
-    
-    def clear(self):
+
+    def clear(self) -> None:
         self.store.clear()

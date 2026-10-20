@@ -1,35 +1,31 @@
 # procedural_store.py
 
+from datetime import UTC, datetime
+
 from .models import MemoryItem, new_id
-from datetime import datetime
 
 
 class ProceduralMemory:
-    def __init__(self):
+    def __init__(self) -> None:
         self.store: list[MemoryItem] = []
 
-    def add_pattern(self, task: str, steps: list[str], success: bool):
+    def add_pattern(self, task: str, steps: list[str], success: bool) -> None:
         self.store.append(
             MemoryItem(
                 id=new_id(),
                 content=task,
-                metadata={
-                    "steps": steps,
-                    "success": success
-                },
-                timestamp=datetime.utcnow(),
+                metadata={"steps": steps, "success": success},
+                timestamp=datetime.now(UTC),
             )
         )
 
-    def all(self):
+    def all(self) -> list[MemoryItem]:
         return self.store
 
-    def best_strategy(self, task: str):
+    def best_strategy(self, task: str) -> list[MemoryItem]:
         candidates = [m for m in self.store if task in m.content]
         return sorted(
-            candidates,
-            key=lambda x: x.metadata.get("success", 0),
-            reverse=True
+            candidates, key=lambda x: x.metadata.get("success", 0), reverse=True
         )
 
     def search(self, query: str, limit: int = 5) -> list[MemoryItem]:
@@ -57,7 +53,6 @@ class ProceduralMemory:
 
         scored.sort(key=lambda x: x[0], reverse=True)
         return [item for _, item in scored[:limit]]
-    
 
-    def clear(self):
+    def clear(self) -> None:
         self.store.clear()

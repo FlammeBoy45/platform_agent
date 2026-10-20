@@ -10,11 +10,14 @@ class DateTimeTool:
     name = "datetime"
     description = (
         "Donne la date et l'heure actuelles. Supporte les timezones IANA "
-        "(ex: Europe/Paris, Africa/Ouagadougou) ou les noms de pays (ex: France, Burkina Faso). "
+        "(ex: Europe/Paris, Africa/Ouagadougou) ou les noms de pays "
+        "(ex: France, Burkina Faso). "
         "UTC par défaut."
     )
     args_schema = {
-        "timezone": "Optionnel. Timezone IANA (ex: Europe/Paris) ou pays (ex: France, Burkina).",
+        "timezone": (
+            "Optionnel. Timezone IANA (ex: Europe/Paris) ou pays (ex: France, Burkina)."
+        ),
         "country": "Optionnel. Nom du pays pour obtenir l'heure locale.",
     }
     optional_args = ("timezone", "country")
@@ -60,14 +63,15 @@ class DateTimeTool:
         "algérie": "Africa/Algiers",
         "algerie": "Africa/Algiers",
         "tunisie": "Africa/Tunis",
-        "sénégal": "Africa/Dakar",
         "nigeria": "Africa/Lagos",
         "afrique du sud": "Africa/Johannesburg",
         "egypte": "Africa/Cairo",
     }
 
     async def execute(self, **kwargs: Any) -> str:
-        timezone_name = str(kwargs.get("timezone", "") or kwargs.get("timeZone", "") or "").strip()
+        timezone_name = str(
+            kwargs.get("timezone", "") or kwargs.get("timeZone", "") or ""
+        ).strip()
         country = str(kwargs.get("country", "") or "").strip()
 
         # Si country est fourni, le convertir en timezone
@@ -111,7 +115,8 @@ class DateTimeTool:
         """Suggère des pays proches du texte fourni."""
         partial_lower = partial.lower()
         matches = [
-            country for country in self._country_to_timezone
+            country
+            for country in self._country_to_timezone
             if partial_lower in country or country in partial_lower
         ]
         return matches[:5]

@@ -95,7 +95,10 @@ def test_conversation_history_stays_within_configured_limit() -> None:
     messages = conversation.get_messages_as_dicts()
     assert len(messages) == 4
     assert [message["role"] for message in messages] == [
-        "user", "assistant", "user", "assistant"
+        "user",
+        "assistant",
+        "user",
+        "assistant",
     ]
 
 
@@ -166,11 +169,15 @@ def test_memory_expires_episodes_and_facts_with_separate_retention(
 def test_legacy_memory_entries_receive_a_timestamp(tmp_path: Path) -> None:
     path = tmp_path / "memory.json"
     path.write_text(
-        json.dumps([{
-            "key": "user.name",
-            "value": "Ada",
-            "text": "Le nom de l'utilisateur est Ada.",
-        }]),
+        json.dumps(
+            [
+                {
+                    "key": "user.name",
+                    "value": "Ada",
+                    "text": "Le nom de l'utilisateur est Ada.",
+                }
+            ]
+        ),
         encoding="utf-8",
     )
 
@@ -348,8 +355,7 @@ async def test_runtime_persists_each_completed_exchange(tmp_path: Path) -> None:
 
     reloaded = JsonMemoryStore(tmp_path / "memory.json")
     episodes = [
-        fact for fact in reloaded.list_recent()
-        if fact.key.startswith("episode.")
+        fact for fact in reloaded.list_recent() if fact.key.startswith("episode.")
     ]
     assert len(episodes) == 1
     assert "agent conversationnel" in episodes[0].text
@@ -359,11 +365,13 @@ async def test_runtime_persists_each_completed_exchange(tmp_path: Path) -> None:
 @pytest.mark.asyncio
 async def test_model_response_does_not_create_persistent_facts(tmp_path: Path) -> None:
     memory = JsonMemoryStore(tmp_path / "memory.json")
-    llm = FakeLLM([
-        '{"goal":"question","tasks":[{"description":"question",'
-        '"depends_on":[],"status":"pending"}]}',
-        '{"tool":"final","args":{"content":"Python est un langage."}}',
-    ])
+    llm = FakeLLM(
+        [
+            '{"goal":"question","tasks":[{"description":"question",'
+            '"depends_on":[],"status":"pending"}]}',
+            '{"tool":"final","args":{"content":"Python est un langage."}}',
+        ]
+    )
     runtime = AgentRuntime(llm, NullLogger(), ToolRegistry(), memory=memory)
 
     await runtime.run("quel langage est Python ?")
@@ -401,9 +409,7 @@ async def test_agent_uses_remembered_assistant_name_after_reload(
     path = tmp_path / "memory.json"
     runtime = build_runtime(JsonMemoryStore(path))
 
-    await runtime.run(
-        "souviens toi que je suis isi la flamme ton pere et toi cest ava"
-    )
+    await runtime.run("souviens toi que je suis isi la flamme ton pere et toi cest ava")
 
     reloaded_runtime = build_runtime(JsonMemoryStore(path))
     response = await reloaded_runtime.run("qui est tu")
@@ -418,21 +424,15 @@ async def test_informal_identity_statement_restores_both_names_after_reload(
     path = tmp_path / "memory.json"
     first_runtime = build_runtime(JsonMemoryStore(path))
 
-    await first_runtime.run(
-        "je suis isi la flamme ton pere et toi ces ava"
-    )
+    await first_runtime.run("je suis isi la flamme ton pere et toi ces ava")
 
     reloaded_memory = JsonMemoryStore(path)
     reloaded_runtime = build_runtime(reloaded_memory)
 
     assert reloaded_memory.get("user.name").value == "isi la flamme"
     assert reloaded_memory.get("agent.name").value == "ava"
-    assert await reloaded_runtime.run("qui je suis") == (
-        "Ton nom est isi la flamme."
-    )
-    assert await reloaded_runtime.run("ton nom") == (
-        "Je suis ava, ton assistant IA."
-    )
+    assert await reloaded_runtime.run("qui je suis") == ("Ton nom est isi la flamme.")
+    assert await reloaded_runtime.run("ton nom") == ("Je suis ava, ton assistant IA.")
 
 
 @pytest.mark.asyncio
@@ -446,9 +446,7 @@ async def test_identity_and_father_questions_use_persisted_relationships(
     await runtime.run("je suis isi la flamme ton pere et toi ces ava")
 
     assert memory.get("agent.father").value == "isi la flamme"
-    assert await runtime.run("qui est ava") == (
-        "Ava, c'est moi, ton assistant IA."
-    )
+    assert await runtime.run("qui est ava") == ("Ava, c'est moi, ton assistant IA.")
     assert await runtime.run("et sui est son pere") == (
         "Tu m'as dit que isi la flamme est mon père."
     )

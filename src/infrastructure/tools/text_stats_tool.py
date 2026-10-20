@@ -4,8 +4,7 @@ from typing import Any
 class TextStatsTool:
     name = "text_stats"
     description = (
-        "Compte les caracteres, mots et lignes d'un texte fourni par "
-        "l'utilisateur."
+        "Compte les caracteres, mots et lignes d'un texte fourni par l'utilisateur."
     )
     args_schema = {
         "text": "Texte a analyser.",
@@ -21,7 +20,7 @@ class TextStatsTool:
     )
 
     def infer_args(self, user_input: str, args: dict[str, Any]) -> dict[str, Any]:
-        """Extrait le texte à analyser depuis l'entrée utilisateur si absent des arguments."""
+        """Extrait le texte à analyser si absent des arguments."""
         if args.get("text"):
             return args
 
@@ -35,7 +34,7 @@ class TextStatsTool:
         prefixes = ("compte", "statistiques", "longueur")
         for prefix in prefixes:
             if cleaned.lower().startswith(prefix):
-                cleaned = cleaned[len(prefix):].strip()
+                cleaned = cleaned[len(prefix) :].strip()
                 break
 
         return {**args, "text": cleaned}
@@ -45,8 +44,4 @@ class TextStatsTool:
         words = text.split()
         lines = text.splitlines() or ([text] if text else [])
 
-        return (
-            f"Caracteres: {len(text)}; "
-            f"Mots: {len(words)}; "
-            f"Lignes: {len(lines)}"
-        )
+        return f"Caracteres: {len(text)}; Mots: {len(words)}; Lignes: {len(lines)}"
